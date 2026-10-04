@@ -85,7 +85,60 @@ def _foot_pitch(G, j):
     return np.degrees(np.arctan2(f[:, 1], np.linalg.norm(f[:, [0, 2]], axis=1)))
 
 
-def compare(old_take, new_take, *, branch="smpl_params_global", offset="auto", max_offset=5) -> dict:
+def _foot_events(pitch, fps=30.0, thr=15.0, min_len=3):
+    """脚部动作事件：俯仰角（先 2 帧高斯去抖）偏离 1 秒滑动中位数 > thr 度、持续 ≥ min_len 帧的段。
+    抬脚尖 / 踮脚跟 / 甩脚这类动作在这里出现；被"吞掉"的脚步动作在旧链路里就没有对应段。
+    返回 [(起, 止, 峰值帧)]。"""
+    from .smooth import gaussian_vec
+    x = gaussian_vec(np.asarray(pitch, dtype=np.float64), sigma=2.0)
+    w = int(fps) // 2
+    pad = np.pad(x, (w, w), mode="edge")
+    med = np.array([np.median(pad[t:t + 2 * w + 1]) for t in range(len(x))])
+    dev = np.abs(x - med)
+    on = dev > thr
+    out, t = [], 0
+    while t < len(on):
+        if on[t]:
+            s = t
+            while t < len(on) and on[t]:
+                t += 1
+            if t - s >= min_len:
+                out.append((s, t - 1, s + int(np.argmax(dev[s:t]))))
+        t += 1
+    return out
+
+
+def _joint_positions(d, sl, rest_joints, joints):
+    """同一副静止骨架（rest_joints）上做正运动学，取指定关节的世界位置（米）。"""
+    J = np.asarray(rest_joints, dtype=np.float64)
+    G = rot.chain_global_rotations(d["global_orient"][sl], d["body_pose"][sl])
+    F = G.shape[0]
+    p = np.zeros((F, 22, 3))
+    p[:, 0] = d["transl"][sl].astype(np.float64) + J[0]
+    for j in range(1, 22):
+        par = rot.SMPLX_PARENTS[j]
+        p[:, j] = p[:, par] + G[:, par] @ (J[j] - J[par])
+    return {j: p[:, j] for j in joints}
+
+
+def _lift_events(h, fps=30.0, thr=0.04, min_len=3):
+    """抬脚：高度高出 2 秒滑动最低点 > thr 米、持续 ≥ min_len 帧的段数。"""
+    w = int(fps)
+    pad = np.pad(h, (w, w), mode="edge")
+    base = np.array([pad[t:t + 2 * w + 1].min() for t in range(len(h))])
+    on = (h - base) > thr
+    n, t = 0, 0
+    while t < len(on):
+        if on[t]:
+            s = t
+            while t < len(on) and on[t]:
+                t += 1
+            n += (t - s) >= min_len
+        t += 1
+    return n
+
+
+def compare(old_take, new_take, *, branch="smpl_params_global", offset="auto", max_offset=5, rest_joints=None) -> dict:
     old, p_old = _load(old_take, branch)
     new, p_new = _load(new_take, branch)
     Fo, Fn = old["body_pose"].shape[0], new["body_pose"].shape[0]
@@ -137,11 +190,25 @@ def compare(old_take, new_take, *, branch="smpl_params_global", offset="auto", m
     pitch = {}
     for side, j in (("L_Ankle", 7), ("R_Ankle", 8), ("L_Foot", 10), ("R_Foot", 11)):
         po, pn = _foot_pitch(Go, j), _foot_pitch(Gn_al, j)
+        ev_o, ev_n = _foot_events(po), _foot_events(pn)
         pitch[side] = {"err": _stats(np.abs(po - pn)), "old_range": round(float(np.ptp(po)), 1),
                        "new_range": round(float(np.ptp(pn)), 1),
                        "old_activity_deg_per_frame": round(float(np.abs(np.diff(po)).mean()), 3),
-                       "new_activity_deg_per_frame": round(float(np.abs(np.diff(pn)).mean()), 3)}
+                       "new_activity_deg_per_frame": round(float(np.abs(np.diff(pn)).mean()), 3),
+                       "old_events": len(ev_o), "new_events": len(ev_n),
+                       "events_only_in_new": len([e for e in ev_n if not any(a <= e[2] <= b for a, b, _ in ev_o)]),
+                       "events_only_in_old": len([e for e in ev_o if not any(a <= e[2] <= b for a, b, _ in ev_n)])}
     out["foot_pitch_world"] = pitch
+    if rest_joints is not None:
+        lifts = {}
+        po = _joint_positions(old, so, rest_joints, (7, 8, 10, 11))
+        pn = _joint_positions(new, sn, rest_joints, (7, 8, 10, 11))
+        for name, j in (("L_Ankle", 7), ("R_Ankle", 8), ("L_Foot", 10), ("R_Foot", 11)):
+            ho, hn = po[j][:, 1], pn[j][:, 1]
+            lifts[name] = {"old": _lift_events(ho), "new": _lift_events(hn),
+                           "old_height_p95_cm": round(float(np.percentile(ho - np.percentile(ho, 5), 95) * 100), 1),
+                           "new_height_p95_cm": round(float(np.percentile(hn - np.percentile(hn, 5), 95) * 100), 1)}
+        out["foot_lifts"] = lifts
     to, tn = old["transl"][so].astype(np.float64), new["transl"][sn].astype(np.float64)
     tn_al = (tn - tn[0]) @ _rot_y(-yaw_off).T + to[0]
     dist = np.linalg.norm(to - tn_al, axis=1)
@@ -219,15 +286,21 @@ def to_markdown(r: dict) -> str:
     for g, s in r["world"]["segments"].items():
         L.append(f"| {g} | {s['mean']} | {s['p95']} | {s['max']} |")
     L += ["", "## 脚：世界空间俯仰角（需求 §2.5 口径）", "",
-          "| 关节 | 误差均值 | P95 | 旧 动作幅度 | 新 动作幅度 | 旧 活动量°/帧 | 新 活动量°/帧 |", "|---|---|---|---|---|---|---|"]
+          "| 关节 | 误差均值 | P95 | 旧 幅度 | 新 幅度 | 旧 动作事件 | 新 动作事件 | 只在新里 | 只在旧里 |", "|---|---|---|---|---|---|---|---|---|"]
     for k, v in r["foot_pitch_world"].items():
         L.append(f"| {k} | {v['err']['mean']} | {v['err']['p95']} | {v['old_range']} | {v['new_range']} | "
-                 f"{v['old_activity_deg_per_frame']} | {v['new_activity_deg_per_frame']} |")
-    L += ["", "（活动量 = 俯仰角逐帧变化的平均值；新 > 旧 说明新链路捕到了更多脚部动作）", "", "## 手指（两边都检测到的帧）", "",
+                 f"{v['old_events']} | {v['new_events']} | {v['events_only_in_new']} | {v['events_only_in_old']} |")
+    L += ["", "（动作事件 = 俯仰角偏离 1 秒滑动中位数 >15° 且持续 ≥3 帧的段：抬脚尖、踮脚跟、甩脚。"
+              "\"只在新里\" = 旧链路同一时刻没有对应动作——即被 GVHMR 吞掉的脚步动作）", "", "## 手指（两边都检测到的帧）", "",
           "| 手 | 帧数 | 均值 | P95 | 最大 | 每关节常值偏差（度） |", "|---|---|---|---|---|---|"]
     for side, h in r["hands"].items():
         s = h["fingers"]
         L.append(f"| {side} | {h['frames_both_detected']} | {s.get('mean')} | {s.get('p95')} | {s.get('max')} | {h['bias_deg_per_joint']} |")
+    if r.get("foot_lifts"):
+        L += ["", "## 抬脚事件（同一副 SMPL-X 骨架正运动学；高出 2 秒滑动最低点 >4 cm、≥3 帧）", "",
+              "| 关节 | 旧 次数 | 新 次数 | 旧 抬起高度 P95 (cm) | 新 抬起高度 P95 (cm) |", "|---|---|---|---|---|"]
+        for k, v in r["foot_lifts"].items():
+            L.append(f"| {k} | {v['old']} | {v['new']} | {v['old_height_p95_cm']} | {v['new_height_p95_cm']} |")
     t = r["root_transl"]
     L += ["", "## 根位移", "", f"- 对齐后逐帧距离：均值 {t['dist_m'].get('mean')} m，P95 {t['dist_m'].get('p95')} m，最大 {t['dist_m'].get('max')} m",
           f"- 水平路径长：旧 {t['path_len_xz_m']['old']} m / 新 {t['path_len_xz_m']['new']} m；高度相关 {t['y_corr']}", "",
@@ -255,8 +328,13 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--branch", default="smpl_params_global")
     ap.add_argument("--offset", default="auto")
+    ap.add_argument("--smplx", default=None, help="SMPLX_*.npz：给了就额外统计抬脚事件")
     a = ap.parse_args(argv)
-    r = compare(a.old, a.new, branch=a.branch, offset=a.offset)
+    rest = None
+    if a.smplx:
+        z = np.load(a.smplx, allow_pickle=True)
+        rest = (z["J_regressor"] @ z["v_template"])[:22]
+    r = compare(a.old, a.new, branch=a.branch, offset=a.offset, rest_joints=rest)
     os.makedirs(a.out, exist_ok=True)
     with open(os.path.join(a.out, "compare.json"), "w", encoding="utf-8") as fh:
         json.dump(r, fh, ensure_ascii=False, indent=1)
