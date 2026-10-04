@@ -1,0 +1,22 @@
+{
+ "_comment": "整合包需要的模型文件。大小/哈希来自 2026-10-04 的 HF / GitHub 元数据；sam-3d-body-dinov3 是 gated 仓库（需在 HF 网页上申请通过 + token），其 LFS sha256 匿名查不到，用云端核对过的 model.ckpt md5 校验。dest 相对整合包根目录。",
+ "files": [
+  {"name": "sam3d_model", "dest": "checkpoints/sam-3d-body-dinov3/model.ckpt", "size": 2109129346,
+   "md5": "68b352bbcab6816e6e305cd165b77fa8",
+   "source": {"type": "hf", "repo": "facebook/sam-3d-body-dinov3", "file": "model.ckpt", "revision": "11aaa346c7204874a1cbafe3d39a979080b2c55a", "gated": true}},
+  {"name": "sam3d_config", "dest": "checkpoints/sam-3d-body-dinov3/model_config.yaml", "size": 1488,
+   "source": {"type": "hf", "repo": "facebook/sam-3d-body-dinov3", "file": "model_config.yaml", "revision": "11aaa346c7204874a1cbafe3d39a979080b2c55a", "gated": true}},
+  {"name": "mhr_model", "dest": "checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt", "size": 696110248,
+   "source": {"type": "hf", "repo": "facebook/sam-3d-body-dinov3", "file": "assets/mhr_model.pt", "revision": "11aaa346c7204874a1cbafe3d39a979080b2c55a", "gated": true}},
+  {"name": "sam3d_license", "dest": "checkpoints/sam-3d-body-dinov3/LICENSE", "size": 8204,
+   "source": {"type": "hf", "repo": "facebook/sam-3d-body-dinov3", "file": "LICENSE", "revision": "11aaa346c7204874a1cbafe3d39a979080b2c55a", "gated": true}},
+  {"name": "yolo_pose", "dest": "checkpoints/yolo/yolo11m-pose.pt", "size": 42459307,
+   "source": {"type": "url", "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11m-pose.pt"}},
+  {"name": "moge2_vits", "dest": "checkpoints/hf/hub/models--Ruicheng--moge-2-vits-normal", "size": 140550416,
+   "sha256": "79a16621928c2bf0ed04659218c55c01075e950507f40bb3332fb4c873d3e1dc",
+   "source": {"type": "hf_cache", "repo": "Ruicheng/moge-2-vits-normal", "file": "model.pt", "revision": "26b477f41595707c5db6770294c0d1721e8ed4ed"}},
+  {"name": "dinov3_hub", "dest": "checkpoints/torch_hub/facebookresearch_dinov3_main", "size": null,
+   "check": "hubconf.py",
+   "source": {"type": "github_zip", "repo": "facebookresearch/dinov3", "commit": "6876159a11b4df116f30f667f8c9888617df0751"}}
+ ]
+}

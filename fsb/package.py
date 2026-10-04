@@ -37,6 +37,11 @@ MERGE_INFO = {"source": "fast_sam_3d_body", "method": "build_hand_pose_arrays", 
               "reference_branch": "incam", "mirror_left_hand": True}
 
 
+# 协议 4：numpy≥2 写协议 5 会引用 numpy._core.numeric，干净的 numpy 1.26（Blender 4.x 自带）读不了（实测）；
+# 协议 4 只引用 numpy(._)core.multiarray，numpy 1.26 / 2.x 都能直接读。插件读 pkl 不在乎协议号。
+PICKLE_PROTOCOL = 4
+
+
 def _f32(a):
     return np.ascontiguousarray(np.asarray(a, dtype=np.float32))
 
@@ -164,7 +169,7 @@ def package_take(seq, out_dir: str, *, take_name: str | None = None, hamer_stem:
     files = {}
     p_person = os.path.join(out_dir, PERSON_REL)
     with open(p_person, "wb") as fh:
-        pickle.dump(person, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(person, fh, protocol=PICKLE_PROTOCOL)
     files["person"] = p_person
     p_hamer = os.path.join(out_dir, "hamer", f"{hamer_stem or take}_hamer_data.pkl")
     with open(p_hamer, "wb") as fh:
@@ -172,7 +177,7 @@ def package_take(seq, out_dir: str, *, take_name: str | None = None, hamer_stem:
     files["hamer"] = p_hamer
     p_merged = os.path.join(out_dir, MERGED_REL)
     with open(p_merged, "wb") as fh:
-        pickle.dump(merged, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(merged, fh, protocol=PICKLE_PROTOCOL)
     files["merged"] = p_merged
     p_top = os.path.join(out_dir, take + ".pkl")
     shutil.copyfile(p_merged, p_top)                            # 参考素材：逐字节相同

@@ -19,7 +19,7 @@ import time
 import cv2
 import numpy as np
 
-FSB = "/root/autodl-tmp/Fast-SAM-3D-Body"
+FSB = os.environ.get("FSB_ROOT", "/root/autodl-tmp/Fast-SAM-3D-Body")  # 新流程见 fsb/pipeline.py + winpack/run_video.py
 sys.path.insert(0, FSB)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fsb import track  # noqa: E402

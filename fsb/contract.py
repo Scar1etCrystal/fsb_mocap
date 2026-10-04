@@ -284,7 +284,25 @@ def validate_take(take_dir: str) -> dict:
                 rep.err(f"{p['take']}.pkl 与 hamer/merged.pkl 内容不同（MoCap Doctor 回退入口会读到别的数据）")
             else:
                 rep.warn(f"{p['take']}.pkl 与 merged.pkl 内容相同但字节不同")
+    _numpy_refs(rep, p)
     return rep.as_dict()
+
+
+def _numpy_refs(rep, p):
+    """pkl 里引用的 numpy 模块名。numpy≥2 写的（numpy._core.*）在干净的 numpy 1.26（Blender 4.x 自带）里读不了
+    numpy._core.numeric，要靠 PoseCapture 插件 import 时装的兼容垫片（_register_numpy_compat）；参考素材的
+    merged.pkl 也是这样。numpy 1.x 写的（numpy.core.*）哪边都能读。"""
+    import re
+    refs = {}
+    for key in ("person", "merged", "top"):
+        if os.path.isfile(p[key]):
+            with open(p[key], "rb") as fh:
+                refs[key] = sorted({m.decode() for m in re.findall(rb"numpy\.[_a-z]+\.[a-z_]+", fh.read())})
+    rep.facts["numpy_refs"] = refs
+    needs_shim = [k for k, v in refs.items() if "numpy._core.numeric" in v]
+    if needs_shim:
+        rep.warn(f"{needs_shim} 由 numpy≥2 写出（引用 numpy._core.numeric）：干净的 numpy 1.26 读不了，"
+                 f"PoseCapture 插件里有兼容垫片所以插件能读（参考素材 merged.pkl 同样如此）；用 numpy 1.x 重写可去掉这条")
 
 
 def main(argv=None):

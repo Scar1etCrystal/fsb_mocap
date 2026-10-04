@@ -1,0 +1,314 @@
+--- a/gvhmr_pose_capture.py
++++ b/gvhmr_pose_capture.py
+@@ -4937,6 +4937,18 @@
+     return p.wilor_dir if p and p.wilor_dir else ""
+ 
+ 
++def get_fsb_dir():
++    """Return FastSAM3DBody pack directory: preference, else <PoseCapture_Pack>/FastSAM3DBody if present. [FSB]"""
++    p = _prefs()
++    if p and getattr(p, "fsb_dir", ""):
++        return p.fsb_dir
++    try:
++        candidate = os.path.join(_pack_root(), "FastSAM3DBody")
++    except Exception:
++        return ""
++    return candidate if os.path.isdir(candidate) else ""
++
++
+ 
+ def get_better_fbx_dir():
+     """Return manually configured Better FBX bridge/tool directory, if any."""
+@@ -4962,6 +4974,32 @@
+ def _wilor_path(*parts):
+     """Join WiLoR root + parts."""
+     return os.path.join(get_wilor_dir(), *parts)
++
++
++def _fsb_path(*parts):
++    """Join FastSAM3DBody pack root + parts. [FSB]"""
++    return os.path.join(get_fsb_dir(), *parts)
++
++
++def _fsb_python():
++    """Interpreter bundled with the FastSAM3DBody pack (Windows: envs/python.exe). [FSB]"""
++    for parts in (("envs", "python.exe"), ("envs", "bin", "python"), ("envs", "python")):
++        path = _fsb_path(*parts)
++        if os.path.isfile(path):
++            return path
++    return _fsb_path("envs", "python.exe")
++
++
++def _fsb_pack_error():
++    """User-facing error when the FastSAM3DBody pack is not usable, else "". [FSB]"""
++    root = get_fsb_dir()
++    if not root or not os.path.isdir(root):
++        return "请在路径设置中设置 FastSAM3DBody 路径（整合包目录，内含 envs/、app/、checkpoints/）"
++    if not os.path.isfile(_fsb_python()):
++        return f"未找到 FastSAM3DBody Python：{_fsb_python()}"
++    if not os.path.isfile(_fsb_path("app", "winpack", "run_video.py")):
++        return "FastSAM3DBody 整合包不完整：缺 app/winpack/run_video.py"
++    return ""
+ 
+ 
+ def _prepend_env_paths(env, key, paths):
+@@ -5242,7 +5280,10 @@
+     # Use hash to create a unique but ASCII-safe name
+     import hashlib
+     safe_name = hashlib.md5(name.encode('utf-8')).hexdigest()[:12]
+-    safe_dir = _gvhmr_path("inputs", "demo")
++    if get_gvhmr_dir() or not get_fsb_dir():
++        safe_dir = _gvhmr_path("inputs", "demo") if get_gvhmr_dir() else os.path.join(tempfile.gettempdir(), "pose_capture_inputs")
++    else:
++        safe_dir = _fsb_path("outputs", "_inputs")  # [FSB] FastSAM3DBody-only setup: no GVHMR dir
+     os.makedirs(safe_dir, exist_ok=True)
+     dst = os.path.join(safe_dir, safe_name + ext)
+     shutil.copy2(src, dst)
+@@ -5437,8 +5478,9 @@
+                  wrist_unwrap=True, wrist_slerp=True, forearm_twist=False,
+                  merge_engine='HAND_BODY',
+                  trim_start_frame=0, trim_end_frame=0,
+-                 on_complete=None, on_progress=None):
++                 on_complete=None, on_progress=None, body_frontend='GVHMR'):
+         self.filepath = filepath
++        self.body_frontend = (body_frontend or 'GVHMR').upper()  # [FSB] 'GVHMR' | 'FASTSAM3DB'
+         self.gender = gender  # 'MALE' or 'FEMALE'
+         self.mode = mode      # 'BODY' or 'FULL'
+         self.camera_motion = camera_motion  # 'static', 'simple_vo', 'dpvo'
+@@ -5521,7 +5563,7 @@
+                 f"--- GVHMR output ---\n"
+                 f"{tail}")
+ 
+-    def _run_cmd(self, cmd, cwd=None, timeout=3600):
++    def _run_cmd(self, cmd, cwd=None, timeout=3600, progress_prefix=None):  # [FSB] progress_prefix
+         """Run a subprocess and capture output. Returns (returncode, stdout)."""
+         self._log(f"Running: {' '.join(cmd)}")
+         env = os.environ.copy()
+@@ -5556,7 +5598,9 @@
+                 raw_line = line.rstrip()
+                 clean_line = _strip_ansi(raw_line)
+                 stdout_lines.append(clean_line)
+-                if len(stdout_lines) % 20 == 0:
++                if progress_prefix and clean_line.startswith(progress_prefix):  # [FSB] forward progress at once
++                    self._log(clean_line[:200])
++                elif len(stdout_lines) % 20 == 0:
+                     last = _ensure_ansi_reset(raw_line.strip())
+                     if last:
+                         self._log(f"  > {last[:120]}{_ANSI_RESET}")
+@@ -5668,6 +5712,9 @@
+                 candidates.append(os.path.join(hamer_dir, "outputs", f"{stem}_fusion"))
+             if wilor_dir:
+                 candidates.append(os.path.join(wilor_dir, "outputs", f"{stem}_wilor"))
++            fsb_root = get_fsb_dir()  # [FSB] uncollected take dir; outputs/_work/<stem> is kept for resume
++            if fsb_root:
++                candidates.append(os.path.join(fsb_root, "outputs", stem))
+             for candidate in candidates:
+                 if self._safe_remove_dir(candidate):
+                     removed_dirs += 1
+@@ -5733,6 +5780,11 @@
+         # Save final stem for intermediate file collection
+         self._work_stem = stem
+ 
++        # [FSB] FastSAM3DBody frontend: body + hands in one pass, same capture-folder layout as GVHMR+HAMER
++        if self.body_frontend == 'FASTSAM3DB':
++            self._run_fsb_pipeline(work_path, stem)
++            return
++
+         # Step 2: Run GVHMR
+         self._log("步骤 1/{}：正在运行 GVHMR 身体估计...".format(
+             "3" if self.mode == 'FULL' else "1"))
+@@ -5857,6 +5909,65 @@
+             self._log("合并失败，回退到仅身体 pkl")
+             saved = self._save_pkl(gvhmr_pkl)
+             self.output_pkl = saved
++
++    def _run_fsb_pipeline(self, work_path, stem):
++        """[FSB] FastSAM3DBody frontend: body + hands in one pass.
++
++        Runs <fsb>/app/winpack/run_video.py with the pack's own Python. It writes <fsb>/outputs/<stem>/ with
++        gvhmr/hmr4d_results.pt_person-0.pkl, hamer/<stem>_hamer_data.pkl and hamer/merged.pkl (same formats as
++        GVHMR + HAMER + hand_body_merge.py); that is then saved exactly like a GVHMR capture.
++        An interrupted run resumes from <fsb>/outputs/_work/<stem>/ the next time the same video is captured.
++        """
++        if self.is_image:
++            self.error = "FastSAM3DBody 前端目前只支持视频/GIF；图片请用 GVHMR 前端"
++            self._log(self.error)
++            return
++        pack_error = _fsb_pack_error()
++        if pack_error:
++            self.error = pack_error
++            self._log(pack_error)
++            return
++        if self.camera_motion != 'static':
++            self._log(f"注意：FastSAM3DBody 按固定机位处理，相机模式 {self.camera_motion} 不生效")
++        if self.person_idx:
++            self._log("注意：FastSAM3DBody 自动锁定主角，人物编号不生效")
++        out_dir = _fsb_path("outputs", stem)
++        cmd = [_fsb_python(), _fsb_path("app", "winpack", "run_video.py"), "--video", work_path,
++               "--out", out_dir, "--take-name", stem, "--hamer-stem", stem, "--clean-work"]
++        if self.f_mm and self.f_mm > 0:
++            cmd += ["--f-mm", str(self.f_mm)]
++        self._log("步骤 1/1：正在运行 FastSAM3DBody（身体 + 手部一次完成，可能需要一些时间）...")
++        rc, out = self._run_cmd(cmd, cwd=get_fsb_dir(), progress_prefix="[FSB]")
++        if self._cancelled:
++            return
++        result = None
++        for line in reversed(out.splitlines()):
++            if line.startswith("[FSB] RESULT "):
++                try:
++                    result = json.loads(line[len("[FSB] RESULT "):])
++                except Exception:
++                    result = None
++                break
++        if rc != 0 or not result or not result.get("ok"):
++            reason = (result or {}).get("error") or f"exit code {rc}"
++            self.error = (f"FastSAM3DBody failed: {reason}\n"
++                          f"--- FastSAM3DBody output ---\n{self._error_tail(out, limit=1600)}")
++            self._log(self.error)
++            return
++        body_pkl = result.get("person") or os.path.join(out_dir, "gvhmr", "hmr4d_results.pt_person-0.pkl")
++        merged_pkl = result.get("merged") or os.path.join(out_dir, "hamer", "merged.pkl")
++        src_pkl = merged_pkl if self.mode == 'FULL' else body_pkl
++        if not os.path.isfile(src_pkl):
++            self.error = f"FastSAM3DBody output not found: {src_pkl}"
++            self._log(self.error)
++            return
++        self._log(f"FastSAM3DBody 完成：{result.get('frames')} 帧，{result.get('seconds')} 秒")
++        if not self.src_fps and result.get("fps"):           # 没有 ffprobe 时用前端读到的帧率（同一个视频文件）
++            self.src_fps = float(result["fps"])
++            self._log(f"Source video fps (from FastSAM3DBody): {self.src_fps:.3f}")
++        saved = self._save_pkl(src_pkl)
++        self.output_pkl = saved
++        self._log(f"FastSAM3DBody output saved: {saved}")
+ 
+     def _save_pkl(self, src_pkl):
+         """Copy pkl, source file and intermediates into a capture subfolder under get_pkl_save_dir().
+@@ -6062,6 +6173,22 @@
+                 self._log(f"Fusion intermediates moved to: {dest_dir}")
+             except Exception as e:
+                 self._log(f"Warning: could not move fusion intermediates: {e}")
++
++        # [FSB] FastSAM3DBody take folder: <fsb>/outputs/{stem}/ (gvhmr/, hamer/, fsb_meta.json)
++        fsb_root = get_fsb_dir()
++        fsb_out = os.path.join(fsb_root, "outputs", stem) if fsb_root else ""
++        if fsb_out and os.path.isdir(fsb_out):
++            try:
++                for sub in ("gvhmr", "hamer"):
++                    if os.path.isdir(os.path.join(fsb_out, sub)):
++                        shutil.copytree(os.path.join(fsb_out, sub), os.path.join(subfolder, sub), dirs_exist_ok=True)
++                meta_json = os.path.join(fsb_out, "fsb_meta.json")
++                if os.path.isfile(meta_json):
++                    shutil.copy2(meta_json, os.path.join(subfolder, "fsb_meta.json"))
++                shutil.rmtree(fsb_out)
++                self._log(f"FastSAM3DBody intermediates moved to: {subfolder}")
++            except Exception as e:
++                self._log(f"Warning: could not move FastSAM3DBody intermediates: {e}")
+ 
+     def _clean_gvhmr_output(self, work_path):
+         """Remove old GVHMR output directory for the given file stem.
+@@ -8079,6 +8206,13 @@
+         default="",
+     )
+ 
++    fsb_dir: bpy.props.StringProperty(  # [FSB]
++        name="FastSAM3DBody 路径",
++        description="FastSAM3DBody 整合包目录（包含 envs/、app/、checkpoints/）；放在 PoseCapture_Pack 下名为 FastSAM3DBody 时可留空",
++        subtype='DIR_PATH',
++        default="",
++    )
++
+     pkl_save_dir: bpy.props.StringProperty(
+         name="PKL 输出目录",
+         description="保存生成的 pkl 文件的目录",
+@@ -8105,6 +8239,7 @@
+         layout.prop(self, "gvhmr_dir")
+         layout.prop(self, "hamer_dir")
+         layout.prop(self, "wilor_dir")
++        layout.prop(self, "fsb_dir")  # [FSB]
+         layout.prop(self, "pkl_save_dir")
+         layout.prop(self, "ffmpeg_dir")
+         layout.prop(self, "better_fbx_dir")
+@@ -8652,6 +8787,14 @@
+         items=[('FEMALE', '女性', '使用女性 SMPL 模型'),
+                ('MALE', '男性', '使用男性 SMPL 模型')],
+         default='FEMALE',
++    )
++
++    body_frontend: bpy.props.EnumProperty(  # [FSB]
++        name="身体前端",
++        description="姿态估计前端。GVHMR：原链路（GVHMR 身体 + HAMER/WiLoR 手部）；FastSAM3DBody：身体和手一次出，脚步动作更完整，需要 FastSAM3DBody 整合包",
++        items=[('GVHMR', 'GVHMR', 'GVHMR 身体 + HAMER/WiLoR 手部（原链路）'),
++               ('FASTSAM3DB', 'FastSAM3DBody', '身体 + 手部一次完成；固定机位；画面有路人时自动锁定主角')],
++        default='GVHMR',
+     )
+ 
+     mode: bpy.props.EnumProperty(
+@@ -9180,16 +9323,27 @@
+             self.report({'ERROR'}, "请先选择文件")
+             return {'CANCELLED'}
+ 
+-        if not get_gvhmr_dir() or not os.path.isdir(get_gvhmr_dir()):
++        use_fsb = getattr(props, "body_frontend", 'GVHMR') == 'FASTSAM3DB'  # [FSB]
++        if use_fsb:
++            fsb_error = _fsb_pack_error()
++            if fsb_error:
++                self.report({'ERROR'}, fsb_error)
++                return {'CANCELLED'}
++            # 导入动画（import_pose_to_blender）仍读 GVHMR 目录里的 SMPL/SMPL-X 身体模型；GVHMR 的 Python 环境不需要
++            if not get_gvhmr_dir() or not os.path.isdir(_gvhmr_path("inputs", "checkpoints", "body_models")):
++                self.report({'ERROR'}, "导入动画需要 GVHMR 目录里的身体模型（inputs/checkpoints/body_models），请在路径设置中设置 GVHMR 路径")
++                return {'CANCELLED'}
++
++        if not use_fsb and (not get_gvhmr_dir() or not os.path.isdir(get_gvhmr_dir())):
+             self.report({'ERROR'}, "请在路径设置中设置 GVHMR 路径")
+             return {'CANCELLED'}
+ 
+         gvhmr_python = _gvhmr_path("envs", "python.exe")
+-        if not os.path.isfile(gvhmr_python):
++        if not use_fsb and not os.path.isfile(gvhmr_python):
+             self.report({'ERROR'}, f"未找到 GVHMR Python：{gvhmr_python}")
+             return {'CANCELLED'}
+ 
+-        if props.mode == 'FULL':
++        if props.mode == 'FULL' and not use_fsb:
+             if not get_hamer_dir() or not os.path.isdir(get_hamer_dir()):
+                 self.report({'ERROR'}, "请在路径设置中设置 HAMER 路径（合并脚本需要）")
+                 return {'CANCELLED'}
+@@ -9223,6 +9377,9 @@
+         ext = os.path.splitext(filepath)[1].lower()
+         if ext not in IMAGE_EXTS and ext not in VIDEO_EXTS and ext not in GIF_EXTS:
+             self.report({'ERROR'}, f"不支持的文件类型：{ext}")
++            return {'CANCELLED'}
++        if use_fsb and ext in IMAGE_EXTS:  # [FSB]
++            self.report({'ERROR'}, "FastSAM3DBody 前端目前只支持视频/GIF；图片请用 GVHMR 前端")
+             return {'CANCELLED'}
+         if ((ext in VIDEO_EXTS or ext in GIF_EXTS)
+                 and props.record_trim_end > 0
+@@ -9265,6 +9422,7 @@
+             trim_end_frame=0,
+             on_complete=_on_pipeline_complete,
+             on_progress=None,
++            body_frontend=getattr(props, "body_frontend", 'GVHMR'),  # [FSB]
+         )
+ 
+         props.is_processing = True
+@@ -13407,12 +13565,17 @@
+     def draw(self, context):
+         layout = self.layout
+         props = context.scene.pose_capture_settings
++        layout.prop(props, "body_frontend")  # [FSB]
++        use_fsb = props.body_frontend == 'FASTSAM3DB'
+         layout.prop(props, "gender")
+         layout.prop(props, "mode")
+-        if props.mode == 'FULL':
++        if props.mode == 'FULL' and not use_fsb:
+             layout.prop(props, "hand_backend")
+             layout.prop(props, "smooth_preset")
+-        layout.prop(props, "camera_motion")
++        if use_fsb:
++            layout.label(text="FastSAM3DBody：身体+手一次出，固定机位，自动锁定主角", icon='INFO')
++        else:
++            layout.prop(props, "camera_motion")
+         layout.prop(props, "height_offset")
+         layout.prop(props, "root_motion_mode")
+         layout.prop(props, "body_smooth_preset")

@@ -11,7 +11,7 @@ import sys
 import numpy as np
 import torch
 
-FSB = "/root/autodl-tmp/Fast-SAM-3D-Body"
+FSB = os.environ.get("FSB_ROOT", "/root/autodl-tmp/Fast-SAM-3D-Body")  # 新流程见 fsb/pipeline.py + winpack/run_video.py
 sys.path.insert(0, FSB)
 from sam_3d_body import load_sam_3d_body  # noqa: E402
 

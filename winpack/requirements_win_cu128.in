@@ -1,0 +1,39 @@
+# FastSAM3DBody 整合包运行时依赖（Windows x64 / CPython 3.10）。
+# 版本 = 2026-10-04 云端验证环境（data/cloud_meta/pip_freeze.txt）里推理链真正用到的包；
+# 只列推理链 import 到的顶层包，其余由解析器补齐 → requirements_win.lock.txt（uv pip compile 生成，勿手改）。
+# torch 走 PyTorch 官方 cu128 索引（RTX 50 系 sm_120；未经云端验证）（国内可换阿里云镜像，见 build_env.ps1）。
+torch==2.7.1+cu128
+torchvision==0.22.1+cu128
+numpy==1.26.4
+opencv-python==4.11.0.86
+pillow==10.3.0
+scipy==1.15.3
+roma==1.6.1
+einops==0.8.2
+timm==1.0.30
+yacs==0.1.8
+omegaconf==2.3.1
+pytorch-lightning==2.6.6
+torchmetrics==1.9.0
+lightning-utilities==0.15.3
+braceexpand==0.1.7
+huggingface_hub==2.1.1
+safetensors==0.8.0
+ultralytics==8.4.172
+ultralytics-thop==2.2.2
+lap==0.5.13
+trimesh==5.1.1
+PyYAML==6.0.1
+requests==2.32.3
+psutil==5.9.8
+matplotlib==3.9.0
+polars==1.44.2
+tqdm
+click==8.5.0
+# DINOv3 的 hubconf 在模块顶层 import termcolor（dinov3/logging），不装 torch.hub.load 就失败（云端装的 3.3.0）
+termcolor==3.3.0
+# MoGe-2（FOV 估计）的两个纯 Python 依赖，与云端同一提交（见 pip_freeze）。
+utils3d @ git+https://github.com/EasternJournalist/utils3d.git@ca3e9ac015ab3473a37ea60f2f55063696638416
+pipeline @ git+https://github.com/EasternJournalist/pipeline.git@1c511390d90226c00c101f34b84df26a0f8789b4
+# MoGe 本身不经 pip 安装：它的元数据要 numpy>=2、flex-gemm（CUDA 扩展）、gradio，推理用不到；云端是源码放进
+# sys.path 跑的（numpy 1.26.4），整合包照做：build 时把 moge/ 源码放到 app/third_party/MoGe（见 build_env.ps1）。
