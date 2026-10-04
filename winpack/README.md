@@ -1,6 +1,7 @@
 # winpack — FastSAM3DBody Windows 一键整合包
 
 方案、体积、验证情况：`../docs/方案_Windows整合包.md`。
+**2026-10-04 起推荐 v2**：并入 PoseCapture 整合包，借 `HAMER\envs`（py3.11）+ 约 0.2 GB 补包；本目录的构建器目前是 v1（独立环境），v2 的 `--profile posecap` 属于阶段 C，见方案 §7。
 
 | 文件 | 用途 |
 |---|---|
