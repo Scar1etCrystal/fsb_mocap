@@ -155,6 +155,12 @@ def package_take(seq, out_dir: str, *, take_name: str | None = None, hamer_stem:
     take = take_name or os.path.basename(out_dir.rstrip(os.sep))
     if os.path.exists(out_dir) and os.listdir(out_dir) and not overwrite:
         raise FileExistsError(f"{out_dir} 已存在且非空（overwrite=True 才覆盖）")
+    if overwrite and os.path.isdir(out_dir):                     # 覆盖：先删上次写的合同文件（换了 stem / take 名时
+        import glob                                                # 旧的 *_hamer_data.pkl 和顶层 pkl 会留下，合同校验看到两份）
+        base = glob.escape(out_dir)
+        for f in (glob.glob(os.path.join(base, "hamer", "*_hamer_data.pkl")) + glob.glob(os.path.join(base, "*.pkl"))):
+            if "repaired" not in os.path.basename(f):              # repaired = 下游修复工具的产物，不是本函数写的
+                os.remove(f)
     os.makedirs(os.path.join(out_dir, "gvhmr"), exist_ok=True)
     os.makedirs(os.path.join(out_dir, "hamer"), exist_ok=True)
 
