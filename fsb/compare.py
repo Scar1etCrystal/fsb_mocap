@@ -321,6 +321,11 @@ def to_markdown(r: dict) -> str:
 
 
 def main(argv=None):
+    for _s in (sys.stdout, sys.stderr):                    # 中文 Windows 重定向输出时 cp936 打不出 ✓/✗
+        try:
+            _s.reconfigure(errors="replace")
+        except Exception:
+            pass
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("old")

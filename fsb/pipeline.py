@@ -22,6 +22,20 @@ import numpy as np
 from . import contract, convert, package, retarget, track
 
 PART = 200                                                     # 每块帧数（续跑粒度）
+
+
+def _atomic_savez(path, compressed=False, **arrays):
+    """先写临时文件再改名：中途取消 / 断电不会留下半截 npz（否则续跑时 BadZipFile，每次都失败）。"""
+    tmp = path[:-4] + ".tmp.npz"                                 # np.savez 会自动补 .npz 后缀
+    (np.savez_compressed if compressed else np.savez)(tmp, **arrays)
+    os.replace(tmp, path)
+
+
+def _atomic_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, indent=1)
+    os.replace(tmp, path)
 KEEP = {"pred_cam_t": np.float32, "pred_joint_coords": np.float32, "focal_length": np.float32, "global_rot": np.float32,
         "body_pose_params": np.float32, "hand_pose_params": np.float32, "scale_params": np.float32,
         "shape_params": np.float32, "pred_keypoints_3d": np.float32, "pred_keypoints_2d": np.float32,
@@ -124,7 +138,8 @@ def stage_select(work):
     out = os.path.join(work, "main_track.npz")
     if os.path.isfile(out):
         return json.load(open(os.path.join(work, "main_track.json"), encoding="utf-8"))
-    z = np.load(os.path.join(work, "track_raw.npz"))
+    with np.load(os.path.join(work, "track_raw.npz")) as zf:          # npz 每次 z[key] 都要重新解压：先整个读出来
+        z = {k: zf[k] for k in zf.files}
     W, H, F = int(z["W"]), int(z["H"]), int(z["F"])
     if len(z["frame"]) == 0:
         raise RuntimeError("整段视频没有检测到人")
@@ -142,10 +157,9 @@ def stage_select(work):
             k = int(np.argmax(iou)); det_iou[t] = iou[k]
             if iou[k] > 0.5:
                 kp_main[t] = kps[t][k]
-    np.savez_compressed(out, bbox_xyxy=r["bbox_xyxy"], detected=r["detected"], source_tracklet=r["source_tracklet"],
-                        kpts=kp_main, det_iou=det_iou)
-    with open(os.path.join(work, "main_track.json"), "w", encoding="utf-8") as fh:
-        json.dump(r["report"], fh, indent=1)
+    _atomic_json(os.path.join(work, "main_track.json"), r["report"])    # 先写 json：npz 在 = 本阶段完成
+    _atomic_savez(out, compressed=True, bbox_xyxy=r["bbox_xyxy"], detected=r["detected"],
+                  source_tracklet=r["source_tracklet"], kpts=kp_main, det_iou=det_iou)
     rep = r["report"]
     log(f"锁主角：覆盖率 {rep['coverage']}，接段 {len(rep['links'])}，其他人轨迹 {len(rep['others_top'])}，"
         f"交叉风险段 {len(rep['risk_frames'])}", 17)
@@ -194,16 +208,42 @@ def K_from_f_mm(W, H, f_mm):
     return np.array([[f, 0, W / 2], [0, f, H / 2], [0, 0, 1.0]])
 
 
+def _read_cam(work):
+    """cam.json → dict；没有或读不出来（被截断）→ None（当作要重算）。"""
+    p = os.path.join(work, "cam.json")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _cam_f_mm(res):
+    """cam.json 记录的焦距来源：f_mm（用户给的 35mm 等效焦距）或 0（MoGe / 默认视角）。旧文件没有这个键，从 source 推。"""
+    if "f_mm" in res:
+        return float(res["f_mm"] or 0.0)
+    src = str(res.get("source", ""))
+    return float(src.split("=", 1)[1]) if src.startswith("f_mm=") else 0.0
+
+
 def stage_fov(video, work, paths, meta, f_mm=0.0, default_hfov_deg=60.0):
     out = os.path.join(work, "cam.json")
+    res = _read_cam(work)
     if os.path.isfile(out):
-        return json.load(open(out, encoding="utf-8"))
-    import cv2
+        if res is not None and abs(_cam_f_mm(res) - float(f_mm or 0.0)) < 1e-6:
+            return res
+        # 换了焦距重捕同一段视频：旧内参和用旧内参推理出的分块都作废（视频签名里没有焦距，只能在这里判）
+        stale = [out] + [f for pat in ("sam3d_part_*.npz", "skel_part_*.npz") for f in glob.glob(os.path.join(glob.escape(work), pat))]
+        old = "读不出来" if res is None else f"{_cam_f_mm(res):g} mm"
+        log(f"相机内参要重算（旧：{old}，现在：{float(f_mm or 0.0):g} mm），清掉旧内参和 {len(stale) - 1} 个推理分块", 18)
+        for f in stale:
+            os.remove(f)
     W, H, F = meta[0], meta[1], meta[3]
     Ks, err = [], None
     if f_mm and f_mm > 0:                                       # 用户给了焦距：不跑 MoGe
         K, src = K_from_f_mm(W, H, f_mm), f"f_mm={f_mm:g}"
     else:
+        import cv2
         try:
             fov = build_fov(paths)
             pick = set(np.linspace(0, F - 1, 15).astype(int).tolist())
@@ -221,12 +261,11 @@ def stage_fov(video, work, paths, meta, f_mm=0.0, default_hfov_deg=60.0):
         else:
             f = (W / 2) / np.tan(np.radians(default_hfov_deg) / 2)
             K, src = np.array([[f, 0, W / 2], [0, f, H / 2], [0, 0, 1.0]]), f"default_hfov_{default_hfov_deg:g}deg"
-    res = {"K": np.asarray(K).tolist(), "source": src, "W": W, "H": H, "error": err,
+    res = {"K": np.asarray(K).tolist(), "source": src, "f_mm": float(f_mm or 0.0), "W": W, "H": H, "error": err,
            "fx_samples": [round(float(k[0, 0]), 1) for k in Ks]}
     if Ks:
         res["fx_spread_pct"] = round(float(np.std([k[0, 0] for k in Ks]) / K[0, 0] * 100), 2)
-    with open(out, "w", encoding="utf-8") as fh:
-        json.dump(res, fh, indent=1)
+    _atomic_json(out, res)
     log(f"相机内参：fx={K[0, 0]:.1f}（{src}）" + (f"；MoGe 失败已退回默认：{err[:120]}" if err else ""), 20)
     return res
 
@@ -252,7 +291,7 @@ def _recompute_skeleton(model, a, chunk=50):
 
 def pending_parts(work, F):
     """还没完成（sam3d 块 + 重算骨架块都在才算完成）的分块号。"""
-    done = {int(os.path.basename(p)[11:15]) for p in glob.glob(os.path.join(work, "sam3d_part_*.npz"))
+    done = {int(os.path.basename(p)[11:15]) for p in glob.glob(os.path.join(glob.escape(work), "sam3d_part_*.npz"))
             if os.path.isfile(p.replace("sam3d_part_", "skel_part_"))}
     return [p for p in range((F + PART - 1) // PART) if p not in done], done
 
@@ -262,7 +301,9 @@ def pending_stages(work, stages, F, f_mm=0.0):
     out = []
     if "track" in stages and not os.path.isfile(os.path.join(work, "track_raw.npz")):
         out.append("track")
-    if "fov" in stages and not os.path.isfile(os.path.join(work, "cam.json")) and not (f_mm and f_mm > 0):
+    cam = _read_cam(work)
+    cam_ok = cam is not None and abs(_cam_f_mm(cam) - float(f_mm or 0.0)) < 1e-6
+    if "fov" in stages and not cam_ok and not (f_mm and f_mm > 0):
         out.append("fov")
     if "infer" in stages and pending_parts(work, F)[0]:
         out.append("infer")
@@ -308,10 +349,10 @@ def stage_infer(video, work, paths, meta, keep_vertices=False):
         if (fi + 1) % PART == 0 or fi + 1 == F:
             arrays = {k: np.stack(v) for k, v in buf.items()}
             n = len(arrays["bbox"])
-            np.savez(os.path.join(work, f"sam3d_part_{part:04d}.npz"), first=part * PART, last=fi,
-                     times=np.array(times[-n:]), **arrays)
+            _atomic_savez(os.path.join(work, f"sam3d_part_{part:04d}.npz"), first=part * PART, last=fi,
+                          times=np.array(times[-n:]), **arrays)
             jc, jr = _recompute_skeleton(model, arrays)
-            np.savez(os.path.join(work, f"skel_part_{part:04d}.npz"), joint_coords_model=jc, joint_rots_model=jr)
+            _atomic_savez(os.path.join(work, f"skel_part_{part:04d}.npz"), joint_coords_model=jc, joint_rots_model=jr)
             buf = {k: [] for k in keep}
     if times:
         peak = torch.cuda.max_memory_allocated() / 2 ** 30
@@ -356,13 +397,12 @@ def video_signature(path, meta):
 def _guard_work(work, video, meta):
     sig, p = video_signature(video, meta), os.path.join(work, "video_sig.json")
     old = json.load(open(p, encoding="utf-8")) if os.path.isfile(p) else None
-    stale = [f for pat in WORK_ARTIFACTS for f in glob.glob(os.path.join(work, pat))]
+    stale = [f for pat in WORK_ARTIFACTS for f in glob.glob(os.path.join(glob.escape(work), pat))]
     if old != sig and stale:
         log(f"work 目录里是另一段视频（或未记录来源）的中间结果，清掉 {len(stale)} 个文件重算", 1)
         for f in stale:
             os.remove(f)
-    with open(p, "w", encoding="utf-8") as fh:
-        json.dump(sig, fh, indent=1)
+    _atomic_json(p, sig)
 
 
 def run(video, out_take, paths, *, work, stages=STAGES, take_name=None, hamer_stem=None, f_mm=0.0, copy_video=True,

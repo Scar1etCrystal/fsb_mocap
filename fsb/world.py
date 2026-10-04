@@ -44,7 +44,7 @@ def _fit_plane(P, thr=0.02, iters=400, seed=0):
     inl = best if best is not None else np.ones(n_pts, bool)
     Q = P[inl]
     c = Q.mean(0)
-    _, _, Vt = np.linalg.svd(Q - c)
+    _, _, Vt = np.linalg.svd(Q - c, full_matrices=False)          # 默认 full_matrices 会分配 N×N 的 U（长视频 OOM）
     n = Vt[2]
     return n, float(n @ c), inl
 
@@ -66,7 +66,8 @@ def estimate_up(joints_c, foot_idx, pelvis_idx=0, neck_idx=12, *, fps=30.0, band
         P = feet[cand]
         if len(P) < 30:
             info["warning"] = f"接地点只有 {len(P)} 个，退回躯干方向"
-            return torso, float(np.percentile(low, 5)), dict(info, contacts=int(len(P)), torso_vs_floor_deg=0.0)
+            low_t = (feet @ torso).min(axis=1)                       # 高度要沿躯干方向重算（up 可能已是上一轮的地面法向）
+            return torso, float(np.percentile(low_t, 5)), dict(info, contacts=int(len(P)), torso_vs_floor_deg=0.0)
         n, d, inl = _fit_plane(P)
         if n @ torso < 0:
             n, d = -n, -d

@@ -26,7 +26,9 @@ from fsb import contract, rot  # noqa: E402
 from merge_tools import HANDOFF_HAMER, STAGE1_HAMER, load, run_merge  # noqa: E402
 from signals import M, RZ180, SIDES, TAKES, R_wc_of, mask  # noqa: E402
 
-HAMERLIKE_PY = "/tmp/claude-1000/-home-sb-exp-lvm/e6b9d07f-50b6-475e-85da-fcb89c30441f/scratchpad/hamerlike_venv/bin/python"
+# 跑用户合并脚本的 Python：要和 HAMER 环境同版本（py3.11 / numpy 2.4.4 / scipy 1.17.1），合并结果才能逐位复现
+HAMERLIKE_PY = os.environ.get("HAMERLIKE_PY",
+                              "/tmp/claude-1000/-home-sb-exp-lvm/e6b9d07f-50b6-475e-85da-fcb89c30441f/scratchpad/hamerlike_venv/bin/python")
 OUT = os.path.join(ROOT, "out_hybrid")
 VARIANTS = ("H0", "H1", "H2", "H3", "H1f", "H2f", "H4")       # f = 合并时开"前臂扭转"（--forearm_twist）；H4 见下
 SHORT_GAP, BLEND = 15, 10                                             # 与合并脚本 --interp_missing_frames 15 同口径

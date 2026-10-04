@@ -303,12 +303,26 @@ pause
 chcp 65001 >nul
 set PYTHONUTF8=1
 echo SAM 3D Body 权重是 gated 仓库：先在 https://huggingface.co/facebook/sam-3d-body-dinov3 申请访问，
-echo 通过后在 https://huggingface.co/settings/tokens 建一个 read token。国内网络会自动用 hf-mirror.com。
+echo 通过后在 https://huggingface.co/settings/tokens 建一个 read token。
+echo 本脚本直连 huggingface.co / github.com；国内连不上请改用 download_weights_cn.bat（经第三方镜像）。
 set /p TOKEN=粘贴 HF token 后回车（已下载过可直接回车只做校验）：
 if "%TOKEN%"=="" (
   "%~dp0envs\python.exe" "%~dp0app\winpack\download_weights.py" --verify-only
 ) else (
-  "%~dp0envs\python.exe" "%~dp0app\winpack\download_weights.py" --hf-token %TOKEN% --hf-endpoint https://hf-mirror.com --github-proxy https://ghfast.top/
+  "%~dp0envs\python.exe" "%~dp0app\winpack\download_weights.py" --hf-token %TOKEN%
+)
+pause
+""",
+    "download_weights_cn.bat": r"""@echo off
+chcp 65001 >nul
+set PYTHONUTF8=1
+echo 国内网络版：HF 走 hf-mirror.com、GitHub 走 ghfast.top（都是第三方镜像）。
+echo 注意：你的 HF token 会发给 hf-mirror.com（下载 gated 权重必须带 token）。不放心就用 download_weights.bat 直连。
+set /p TOKEN=粘贴 HF token 后回车（已下载过可直接回车只做校验）：
+if "%TOKEN%"=="" (
+  "%~dp0envs\python.exe" "%~dp0app\winpack\download_weights.py" --verify-only
+) else (
+  "%~dp0envs\python.exe" "%~dp0app\winpack\download_weights.py" --hf-token %TOKEN% --hf-endpoint https://hf-mirror.com --github-proxy https://ghfast.top/ --allow-token-to-mirror
 )
 pause
 """,

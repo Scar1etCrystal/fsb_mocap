@@ -183,7 +183,18 @@ def main(argv=None):
     ap.add_argument("--hf-token", default=os.environ.get("HF_TOKEN", ""))
     ap.add_argument("--hf-endpoint", default=os.environ.get("HF_ENDPOINT", "https://huggingface.co"))
     ap.add_argument("--github-proxy", default="", help="GitHub 下载前缀代理，如 https://ghfast.top/")
+    ap.add_argument("--allow-token-to-mirror", action="store_true",
+                    help="允许把 HF token 发给非 huggingface.co 的 --hf-endpoint（第三方镜像）；不加则对镜像不带 token")
     a = ap.parse_args(argv)
+    runtime_env.safe_stdio()
+    official = a.hf_endpoint.rstrip("/").lower() in ("https://huggingface.co", "http://huggingface.co")
+    if a.hf_token and not official:
+        if a.allow_token_to_mirror:
+            print(f"注意：HF token 会发给第三方镜像 {a.hf_endpoint}")
+        else:
+            print(f"注意：{a.hf_endpoint} 不是 huggingface.co，不把 HF token 发给它（gated 权重会下载失败）；"
+                  "确认信任该镜像再加 --allow-token-to-mirror")
+            a.hf_token = ""
     pack = runtime_env.layout(a.pack)["pack"]
     os.environ.pop("HF_HUB_OFFLINE", None)
     os.environ["HF_ENDPOINT"] = a.hf_endpoint

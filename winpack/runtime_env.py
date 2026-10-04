@@ -46,12 +46,26 @@ def layout(pack=None):
     }
 
 
+def safe_stdio():
+    """中文 Windows 上输出被重定向时 stdout 是 cp936，打印 ✓/✗ 会抛 UnicodeEncodeError（命令就此中断）：改成替换字符。"""
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
 def setup(pack=None, offline=True):
     """设环境变量 + sys.path（必须在 import torch / sam_3d_body 之前调用）。返回 layout 字典。"""
+    safe_stdio()
     L = layout(pack)
     for k, v in VALIDATED_ENV.items():
         os.environ.setdefault(k, v)
-    os.environ.setdefault("HF_HOME", L["hf_home"])
+    # 包内的 HF 缓存优先（用户自己全局设过 HF_HOME 时，setdefault 会让 MoGe 在离线模式下找不到权重、静默退回 60° 视角）
+    if os.path.isdir(L["hf_home"]):
+        os.environ["HF_HOME"] = L["hf_home"]
+    else:
+        os.environ.setdefault("HF_HOME", L["hf_home"])
     os.environ.setdefault("TORCH_HOME", os.path.join(L["ckpt"], "torch_hub"))
     os.environ.setdefault("YOLO_CONFIG_DIR", L["yolo_cfg"])
     os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")   # torch≥2.6（cu128 版）默认 weights_only=True
@@ -101,8 +115,14 @@ def ascii_safe_copy(path, work_dir):
         except UnicodeEncodeError:                                    # work 目录本身含非 ASCII：退到系统临时目录
             import hashlib
             import tempfile
-            dst = os.path.join(tempfile.gettempdir(), "fsb_" + hashlib.md5(path.encode("utf-8")).hexdigest()[:12]
-                               + os.path.splitext(path)[1].lower())
+            name = "fsb_" + hashlib.md5(path.encode("utf-8")).hexdigest()[:12] + os.path.splitext(path)[1].lower()
+            dst = os.path.join(tempfile.gettempdir(), name)
+            try:
+                dst.encode("ascii")
+            except UnicodeEncodeError:                                # 用户名是中文时临时目录也不行：退到公共目录
+                base = os.environ.get("PUBLIC") or os.path.splitdrive(os.path.abspath(path))[0] + os.sep
+                os.makedirs(os.path.join(base, "fsb_tmp"), exist_ok=True)
+                dst = os.path.join(base, "fsb_tmp", name)
         if not (os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(path)):
             shutil.copyfile(path, dst)
         return dst, True

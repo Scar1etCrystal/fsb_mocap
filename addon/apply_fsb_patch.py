@@ -304,10 +304,14 @@ EDITS = [
             return {'CANCELLED'}
 ''', "after"),
     ("捕捉：把前端传给流水线", "class POSE_OT_capture(bpy.types.Operator):", [
+        "            trim_start_frame=0,",
+        "            trim_end_frame=0,",
         "            on_complete=_on_pipeline_complete,",
         "            on_progress=None,",
         "        )",
-    ], '''            on_complete=_on_pipeline_complete,
+    ], '''            trim_start_frame=0,
+            trim_end_frame=0,
+            on_complete=_on_pipeline_complete,
             on_progress=None,
             body_frontend=getattr(props, "body_frontend", 'GVHMR'),  # [FSB]
         )
@@ -329,7 +333,7 @@ def _split(text):
 
 
 def _find(lines, block, start=0, scope=None):
-    """block 在 lines 里（从 scope 锚点之后）第一次出现的下标；scope=None 时必须全文唯一。"""
+    """block 在 lines 里（scope 锚点之后 1500 行内，或全文）出现的下标；必须唯一命中。"""
     end = len(lines)
     if scope is not None:
         hits = [i for i, (c, _) in enumerate(lines) if c.rstrip().startswith(scope.rstrip())]
@@ -341,7 +345,7 @@ def _find(lines, block, start=0, scope=None):
             if all(lines[i + k][0].rstrip() == block[k].rstrip() for k in range(n))]
     if not hits:
         raise LookupError(f"没找到：{block[0]!r} …")
-    if scope is None and len(hits) != 1:
+    if len(hits) != 1:                                      # 范围内也必须唯一：多处命中时取第一个只是碰巧对
         raise LookupError(f"命中 {len(hits)} 次（应唯一）：{block[0]!r} …")
     return hits[0]
 
@@ -375,6 +379,11 @@ def main(argv=None):
     ap.add_argument("--check", action="store_true", help="只检查")
     ap.add_argument("--diff", help="另存 unified diff 到这个文件")
     a = ap.parse_args(argv)
+    for s in (sys.stdout, sys.stderr):                     # 中文 Windows 重定向输出时 cp936 打不出 ✓/✗：改成替换字符，别中断
+        try:
+            s.reconfigure(errors="replace")
+        except Exception:
+            pass
     raw = open(a.addon, "rb").read()
     bom = raw.startswith(b"\xef\xbb\xbf")
     text = raw[3:].decode("utf-8") if bom else raw.decode("utf-8")

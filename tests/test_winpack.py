@@ -40,8 +40,9 @@ def test_pending_and_guard():
     with tempfile.TemporaryDirectory() as d:
         st = pipeline.pending_stages(d, pipeline.STAGES, 450)
         check("空 work：track/fov/infer 都要跑", st == ["track", "fov", "infer"], str(st))
-        for n in ("track_raw.npz", "cam.json"):
-            open(os.path.join(d, n), "wb").close()
+        open(os.path.join(d, "track_raw.npz"), "wb").close()
+        with open(os.path.join(d, "cam.json"), "w", encoding="utf-8") as fh:
+            json.dump({"K": [[1000, 0, 32], [0, 1000, 18], [0, 0, 1]], "source": "moge2", "f_mm": 0.0}, fh)
         for p in range(3):
             open(os.path.join(d, f"sam3d_part_{p:04d}.npz"), "wb").close()
         open(os.path.join(d, "skel_part_0000.npz"), "wb").close()
@@ -63,6 +64,38 @@ def test_pending_and_guard():
         pipeline._guard_work(d, v2, meta)
         left = sorted(f for f in os.listdir(d) if f.endswith((".npz", ".json")) and f != "video_sig.json")
         check("换了视频：中间结果清空", left == [], str(left))
+
+
+def test_resume_robustness():
+    # 目录名带 [..]（yt-dlp 默认文件名"标题 [ID]"）：glob 不能把它当字符类
+    with tempfile.TemporaryDirectory() as root:
+        d = os.path.join(root, "My Dance [abc123]_work")
+        os.makedirs(d)
+        for p in range(2):
+            open(os.path.join(d, f"sam3d_part_{p:04d}.npz"), "wb").close()
+            open(os.path.join(d, f"skel_part_{p:04d}.npz"), "wb").close()
+        todo, done = pipeline.pending_parts(d, 400)
+        check("目录名带方括号：已完成的分块能找到", todo == [] and done == {0, 1}, f"todo={todo} done={sorted(done)}")
+        # 换了焦距：旧内参和分块作废
+        with open(os.path.join(d, "cam.json"), "w", encoding="utf-8") as fh:
+            json.dump({"K": [[1000, 0, 32], [0, 1000, 18], [0, 0, 1]], "source": "moge2"}, fh)   # 旧格式：没有 f_mm 键
+        check("旧 cam.json（MoGe）+ 不给焦距：内参有效", "fov" not in pipeline.pending_stages(d, ("fov",), 400))
+        check("旧 cam.json（MoGe）+ 改给焦距 35mm：仍不需要跑 MoGe（用焦距现算）",
+              "fov" not in pipeline.pending_stages(d, ("fov",), 400, f_mm=35.0))
+        res = pipeline.stage_fov(os.path.join(d, "none.mp4"), d, None, (64, 36, 30.0, 400), f_mm=35.0)
+        left = sorted(f for f in os.listdir(d) if f.startswith(("sam3d_part", "skel_part")))
+        check("改了焦距：重算内参、清掉旧推理分块", res["source"] == "f_mm=35" and res["f_mm"] == 35.0 and left == [],
+              f"{res['source']} {left}")
+        res2 = pipeline.stage_fov(os.path.join(d, "none.mp4"), d, None, (64, 36, 30.0, 400), f_mm=35.0)
+        check("焦距不变：直接复用", res2 == res)
+        # 截断的 cam.json 当作要重算，不崩
+        open(os.path.join(d, "cam.json"), "w").write('{"K": [[1')
+        check("截断的 cam.json：判为要重算", "fov" in pipeline.pending_stages(d, ("fov",), 400))
+        # 原子写：不留临时文件
+        pipeline._atomic_savez(os.path.join(d, "x.npz"), a=np.arange(3))
+        pipeline._atomic_json(os.path.join(d, "y.json"), {"a": 1})
+        check("原子写入不留临时文件", not [f for f in os.listdir(d) if ".tmp" in f]
+              and np.load(os.path.join(d, "x.npz"))["a"].tolist() == [0, 1, 2])
 
 
 def test_ascii_copy():

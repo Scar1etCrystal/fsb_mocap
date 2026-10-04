@@ -50,10 +50,10 @@ def load_pkl(path: str) -> Any:
 def take_paths(take_dir: str) -> dict:
     take_dir = os.path.abspath(take_dir)
     name = os.path.basename(take_dir.rstrip(os.sep))
-    hamer = sorted(glob.glob(os.path.join(take_dir, "hamer", "*_hamer_data.pkl")))
+    hamer = sorted(glob.glob(os.path.join(glob.escape(take_dir), "hamer", "*_hamer_data.pkl")))
     # 顶层副本：插件重新合并时写 <目录名>.pkl；MoCap Doctor 回退时取根目录第一个非 repaired 的 *.pkl
     # （999v2 素材目录改过名，顶层文件名 ≠ 目录名——所以按 MoCap Doctor 的规则找）
-    tops = [f for f in sorted(glob.glob(os.path.join(take_dir, "*.pkl"))) if "repaired" not in os.path.basename(f)]
+    tops = [f for f in sorted(glob.glob(os.path.join(glob.escape(take_dir), "*.pkl"))) if "repaired" not in os.path.basename(f)]
     exact = os.path.join(take_dir, name + ".pkl")
     top = exact if os.path.isfile(exact) else (tops[0] if tops else exact)
     return {"take": name, "dir": take_dir,

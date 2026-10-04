@@ -63,7 +63,10 @@ def check_gpu(rep):
     rep.add("显卡", True, f"{name}，sm_{cap[0]}{cap[1]}，{vram:.1f} GB；{nvidia_smi()}")
     archs = torch.cuda.get_arch_list()
     sm = f"sm_{cap[0]}{cap[1]}"
-    supported = sm in archs or any(a.startswith("compute_") and int(a.split("_")[1]) <= cap[0] * 10 + cap[1] for a in archs)
+    cc = cap[0] * 10 + cap[1]
+    supported = (sm in archs
+                 or any(a.startswith("sm_") and a[3:].isdigit() and int(a[3:]) // 10 == cap[0] and int(a[3:]) <= cc for a in archs)
+                 or any(a.startswith("compute_") and a[8:].isdigit() and int(a[8:]) <= cc for a in archs))
     rep.add("torch 支持该显卡架构", supported,
             f"{sm} {'在' if supported else '不在'} {archs}" + ("" if supported else
             "：RTX 50 系（sm_120）需要 cu128 版整合包（build_pack.py --profile cu128）"))

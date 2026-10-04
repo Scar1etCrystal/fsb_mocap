@@ -28,8 +28,8 @@ SMPLX_J0 = np.array([0.001, -0.351, 0.012])        # 占位：真实值由 SMPL-
 
 
 def load_take(raw_dir):
-    parts = sorted(glob.glob(os.path.join(raw_dir, "sam3d_part_*.npz")))
-    skels = sorted(glob.glob(os.path.join(raw_dir, "skel_part_*.npz")))
+    parts = sorted(glob.glob(os.path.join(glob.escape(raw_dir), "sam3d_part_*.npz")))   # 目录名里的 [..] 不能当通配
+    skels = sorted(glob.glob(os.path.join(glob.escape(raw_dir), "skel_part_*.npz")))
     if len(parts) != len(skels):
         raise RuntimeError(f"{raw_dir}: sam3d 分块 {len(parts)} 个、重算骨架 {len(skels)} 个——先跑 recompute_skel.py")
     cat = lambda files, key: np.concatenate([np.load(f)[key] for f in files])
