@@ -31,7 +31,8 @@ def series(pkl):
     for s in ("L", "R"):
         W = rot.rotvec_to_mat(bp[:, WRIST[s]])
         H = rot.rotvec_to_mat(np.asarray(g[HAND[s]], float).reshape(-1, 15, 3))
-        out[s] = {"W": W, "H": H, "wsp": np.r_[0, rot.geodesic_deg(W[1:], W[:-1])],
+        E = rot.rotvec_to_mat(bp[:, {"L": slice(51, 54), "R": slice(54, 57)}[s]])
+        out[s] = {"W": W, "H": H, "wsp": np.r_[0, rot.geodesic_deg(W[1:], W[:-1])], "esp": np.r_[0, rot.geodesic_deg(E[1:], E[:-1])],
                   "fsp": np.r_[0, rot.geodesic_deg(H[1:], H[:-1]).mean(1)], "bend": rot.geodesic_deg(W, np.eye(3)[None])}
     out["body"] = bp
     return out
@@ -45,7 +46,7 @@ def main():
           "坏段 = 用户标注（999：A–E 问题全集；1499：两处遮挡），pkl 帧号。", ""]
     for take, cfg in TAKES.items():
         vers = {"旧(GVHMR+HaMeR)": f"{cfg['ref']}/hamer/merged.pkl", "FSB自带手": f"{cfg['fsb']}/hamer/merged.pkl"}
-        for v in ("H0", "H1", "H2", "H3", "H1f", "H2f"):
+        for v in ("H0", "H1", "H2", "H3", "H1f", "H2f", "H4"):
             vers[f"混合{v}"] = f"{OUT}/{take}_{v}/hamer/merged.pkl"
         S = {k: series(p) for k, p in vers.items()}
         F = min(len(S[k]["body"]) for k in S)
@@ -53,14 +54,14 @@ def main():
         md += [f"## {take}", ""]
         # 身体（除手腕）应与 FSB 自带手版本逐位相同
         fsb_body = S["FSB自带手"]["body"][:F].reshape(F, 21, 3)
-        for v in ("H0", "H1", "H2", "H3", "H1f", "H2f"):
+        for v in ("H0", "H1", "H2", "H3", "H1f", "H2f", "H4"):
             hb = S[f"混合{v}"]["body"][:F].reshape(F, 21, 3)
-            others = [j for j in range(21) if j not in ((17, 18, 19, 20) if v.endswith("f") else (19, 20))]
+            others = [j for j in range(21) if j not in ((17, 18, 19, 20) if (v.endswith("f") or v == "H4") else (19, 20))]
             d = float(np.abs(hb[:, others] - fsb_body[:, others]).max())
             summary[take][f"body_nonwrist_maxdiff_{v}"] = d
         md.append(f"- 混合版除手腕外的身体与 FSB 版逐位相同：最大差 "
-                  + "，".join(f"{v} {summary[take][f'body_nonwrist_maxdiff_{v}']:.1e}" for v in ("H0", "H1", "H2", "H3", "H1f", "H2f"))
-                + "（f 版不比肘部：前臂扭转本来就改肘）")
+                  + "，".join(f"{v} {summary[take][f'body_nonwrist_maxdiff_{v}']:.1e}" for v in ("H0", "H1", "H2", "H3", "H1f", "H2f", "H4"))
+                + "（f 版和 H4 不比肘部：小臂扭转本来就改肘）")
         old = S["旧(GVHMR+HaMeR)"]
         h0 = S["混合H0"]
         for s in ("L", "R"):
@@ -72,24 +73,25 @@ def main():
             bad = mask(F, cfg["bad"][s])
             T = float(np.percentile(old[s]["wsp"][:F], 97))
             md += [f"### {take} {'左' if s == 'L' else '右'}手（T = {T:.1f}°/帧）", "",
-                   "| 版本 | 手腕角速度 P50 / P95 | 超 T 帧：坏段内 / 坏段外 | 坏段内手腕最大角速度 | 手腕弯曲 P95 | 手指角速度 P95 | 手的世界朝向 vs 旧：均值 / P95 |",
-                   "|---|---|---|---|---|---|---|"]
+                   "| 版本 | 手腕角速度 P50 / P95 | 超 T 帧：坏段内 / 坏段外 | 坏段内手腕最大角速度 | 手腕弯曲 P95 | 手指角速度 P95 | 手的世界朝向 vs 旧：均值 / P95 | 小臂 >60°/帧 帧数 |",
+                   "|---|---|---|---|---|---|---|---|"]
             for k, X in S.items():
                 w, f = X[s]["wsp"][:F], X[s]["fsp"][:F]
                 dd = rot.geodesic_deg(X["Gw"][s][:F], old["Gw"][s][:F])         # 手腕局部角随前臂变，世界朝向才是"还是不是那只手"
                 row = {"wsp_p50": float(np.median(w)), "wsp_p95": float(np.percentile(w, 95)),
                        "over_T_in": int((w[bad] > T).sum()), "over_T_out": int((w[~bad] > T).sum()),
                        "max_in": float(w[bad].max()), "bend_p95": float(np.percentile(X[s]["bend"][:F], 95)),
-                       "fsp_p95": float(np.percentile(f, 95)), "vs_old_mean": float(dd.mean()), "vs_old_p95": float(np.percentile(dd, 95))}
+                       "fsp_p95": float(np.percentile(f, 95)), "vs_old_mean": float(dd.mean()), "vs_old_p95": float(np.percentile(dd, 95)),
+                       "elbow_spikes": int((X[s]["esp"][:F] > 60).sum())}
                 summary[take].setdefault(s, {})[k] = row
                 md.append(f"| {k} | {row['wsp_p50']:.1f} / {row['wsp_p95']:.1f} | {row['over_T_in']} / {row['over_T_out']} | "
-                          f"{row['max_in']:.1f} | {row['bend_p95']:.0f}° | {row['fsp_p95']:.1f} | {row['vs_old_mean']:.1f} / {row['vs_old_p95']:.1f} |")
-            md += ["", f"逐段（手腕最大角速度 °/帧，旧 → H0 / H1 / H2 / H3 / H1f / H2f）：", ""]
+                          f"{row['max_in']:.1f} | {row['bend_p95']:.0f}° | {row['fsp_p95']:.1f} | {row['vs_old_mean']:.1f} / {row['vs_old_p95']:.1f} | {row['elbow_spikes']} |")
+            md += ["", f"逐段（手腕最大角速度 °/帧，旧 → H0 / H1 / H2 / H3 / H1f / H2f / H4）：", ""]
             for (a, b), nm in zip(cfg["bad"][s], SEG_NAMES[take][s]):
-                vals = [S[k][s]["wsp"][a:b + 1].max() for k in ("旧(GVHMR+HaMeR)", "混合H0", "混合H1", "混合H2", "混合H3", "混合H1f", "混合H2f")]
+                vals = [S[k][s]["wsp"][a:b + 1].max() for k in ("旧(GVHMR+HaMeR)", "混合H0", "混合H1", "混合H2", "混合H3", "混合H1f", "混合H2f", "混合H4")]
                 md.append(f"- {nm}：{vals[0]:.1f} → " + " / ".join(f"{x:.1f}" for x in vals[1:]))
             md.append("")
-        for v in ("H2", "H3"):
+        for v in ("H2", "H3", "H4"):
             meta = json.load(open(f"{OUT}/{take}_{v}/hybrid_meta.json", encoding="utf-8"))
             md.append(f"- {v} 门控补帧：左 {meta['filled']['L']['pct']}%、右 {meta['filled']['R']['pct']}%；区间（左）"
                       f"{meta['gated']['L'][:12]}{' …' if len(meta['gated']['L']) > 12 else ''}")

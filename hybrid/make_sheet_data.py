@@ -1,6 +1,6 @@
 """关键帧对照图的数据：各版本 SMPL-X 网格（含手）+ 视频人物/左右手裁剪。Blender 那边只负责渲染拼图。
 
-列：视频 | 旧（GVHMR+HaMeR）| FSB 自带手 | 混合 H2f（FSB 身体 + HaMeR 手 + 俯仰补偿 + 语义门控 + 前臂扭转）
+列：视频 | 旧（GVHMR+HaMeR）| FSB 自带手 | 混合 H4（FSB 身体 + HaMeR 手 + 俯仰补偿 + 门控 + 跨帧连续的小臂扭转）
 """
 from __future__ import annotations
 
@@ -20,11 +20,12 @@ from merge_tools import load  # noqa: E402
 from signals import TAKES  # noqa: E402
 
 FRAMES = {   # pkl 帧号：标注坏段里挑代表帧 + 几个正常帧
-    "t999": {540: "A 右手 532–556", 691: "B1 右手 688–696", 694: "B2 左手 687–701", 739: "C 左手 ~739", 771: "E 左手 ~771（不修）",
-             775: "770–779 左手", 788: "D1 双手 786–791", 806: "D2 左手 800–817", 300: "正常", 900: "正常"},
+    "t999": {100: "左手 87–126（你确认的坏段）", 115: "左手 87–126", 540: "A 右手 532–556", 691: "B1 右手 688–696",
+             737: "左小臂甩动处（H2f）", 746: "左小臂甩动处（H2f）", 750: "左小臂甩动处（H2f）", 771: "E 左手 ~771（不修）",
+             788: "D1 双手 786–791", 806: "D2 左手 800–817", 300: "正常", 900: "正常"},
     "t1499": {520: "遮挡 右手 512–554", 540: "遮挡 右手 512–554", 890: "遮挡 左手 884–898", 200: "正常", 700: "正常", 1200: "正常"},
 }
-VERSIONS = {"old": "{ref}/hamer/merged.pkl", "fsb": "{fsb}/hamer/merged.pkl", "H2f": ROOT + "/out_hybrid/{take}_H2f/hamer/merged.pkl"}
+VERSIONS = {"old": "{ref}/hamer/merged.pkl", "fsb": "{fsb}/hamer/merged.pkl", "H2f": ROOT + "/out_hybrid/{take}_H4/hamer/merged.pkl"}  # 第 4 列 = H4
 SMPLX = os.path.join(ROOT, "data", "models", "SMPLX_NEUTRAL.npz")
 
 

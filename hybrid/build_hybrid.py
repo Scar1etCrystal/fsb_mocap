@@ -28,7 +28,7 @@ from signals import M, RZ180, SIDES, TAKES, R_wc_of, mask  # noqa: E402
 
 HAMERLIKE_PY = "/tmp/claude-1000/-home-sb-exp-lvm/e6b9d07f-50b6-475e-85da-fcb89c30441f/scratchpad/hamerlike_venv/bin/python"
 OUT = os.path.join(ROOT, "out_hybrid")
-VARIANTS = ("H0", "H1", "H2", "H3", "H1f", "H2f")             # f = 合并时开"前臂扭转"（--forearm_twist）
+VARIANTS = ("H0", "H1", "H2", "H3", "H1f", "H2f", "H4")       # f = 合并时开"前臂扭转"（--forearm_twist）；H4 见下
 SHORT_GAP, BLEND = 15, 10                                             # 与合并脚本 --interp_missing_frames 15 同口径
 
 
@@ -131,6 +131,71 @@ def fill_gaps(o_raw, hp_raw, keep, side, R_wc, elbow_w):
     return o, hp, filled
 
 
+TWIST_SHARE, TWIST_MAX = 0.55, 120.0                                 # 与合并脚本 forearm_twist 同比例；小臂分到的扭转封顶
+AXIS = {"L": np.array([1.0, 0.0, 0.0]), "R": np.array([-1.0, 0.0, 0.0])}  # SMPL-X T 姿态小臂轴（同合并脚本）
+
+
+def twist_deg(R, axis):
+    """绕小臂轴的扭转角（swing-twist 分解），(-180, 180]。"""
+    q = rot.mat_to_quat(R)                                           # (w, x, y, z)
+    t = np.degrees(2 * np.arctan2(q[:, 1:] @ axis, q[:, 0]))
+    return (t + 180) % 360 - 180
+
+
+TWIST_BOUND = float(os.environ.get("HYB_TWIST_BOUND", "9999"))  # 超过即判异常（交门控）；默认关：FSB 上臂旋转偏时正常的掌心朝上也会超界（t1499 实测误报）
+TWIST_RATE = 25.0                                                     # 分给小臂的扭转每帧最多变化（°），HaMeR 一帧翻手时兜底
+TWIST_FREE = 150.0                                                    # 生理范围内不罚
+
+
+def unwrap_deg(t, bound=TWIST_BOUND, free=TWIST_FREE, w_range=0.05):
+    """全局最优的扭转连续化（Viterbi）：每帧在 τ−360 / τ / τ+360 三种表示里选，
+    代价 = 帧间变化² + w_range·超出生理范围²，一次性选出整段最平滑、又尽量在 ±free 内的一串。
+    贪心逐帧 unwrap 会被大弯曲时扭转分解的噪声带偏并一路累积（t1499 左手实测攒到 417°）；这里没有累积。
+    返回 (连续扭转, 超出 ±bound 的帧掩码)。"""
+    t = np.asarray(t, float)
+    F = len(t)
+    if not F:
+        return t.copy(), np.zeros(0, bool)
+    ks = np.array([-360.0, 0.0, 360.0])
+    cand = t[:, None] + ks[None]                                     # (F, 3)
+    unary = w_range * np.maximum(0.0, np.abs(cand) - free) ** 2
+    cost = unary[0].copy()
+    back = np.zeros((F, 3), int)
+    for i in range(1, F):
+        trans = (cand[i][None, :] - cand[i - 1][:, None]) ** 2       # (prev, cur)
+        tot = cost[:, None] + trans
+        back[i] = np.argmin(tot, axis=0)
+        cost = tot[back[i], np.arange(3)] + unary[i]
+    k = int(np.argmin(cost))
+    out = np.empty(F)
+    for i in range(F - 1, -1, -1):
+        out[i] = cand[i, k]
+        k = back[i, k]
+    return out, np.abs(out) > bound
+
+
+def distribute_twist(o_raw, side, G_world, body_pose):
+    """合并前把手腕扭转按比例（跨帧连续）分给小臂：改 FSB 的肘部局部旋转，合并脚本据此算出的手腕扭转就小了。
+    合并脚本自带的 --forearm_twist 每帧单独算扭转角，跨过 ±180° 时会翻符号，一帧把小臂甩 160–200°（t999 左手 737/746–750 实测）。
+    返回新的 body_pose 与统计。手的世界朝向不变（只转小臂自身轴，腕关节位置也不动）。"""
+    ej = 18 if side == "L" else 19                                   # SMPL-X 肘关节
+    E = G_world[:, ej]
+    H = merge_world(o_raw, side)
+    W = np.einsum("fji,fjk->fik", E, H)                              # 手腕局部（相对小臂）
+    tau, _ = unwrap_deg(twist_deg(W, AXIS[side]))
+    target = np.clip(TWIST_SHARE * tau, -TWIST_MAX, TWIST_MAX)
+    phi = target.copy()
+    for i in range(1, len(phi)):                                     # 限速：HaMeR 一帧把手翻 ~180° 时小臂不跟着甩，残余留给手腕
+        phi[i] = phi[i - 1] + np.clip(target[i] - phi[i - 1], -TWIST_RATE, TWIST_RATE)
+    bp = body_pose.copy().reshape(-1, 21, 3)
+    Rel = rot.rotvec_to_mat(bp[:, ej - 1])
+    T = rot.rotvec_to_mat(np.radians(phi)[:, None] * AXIS[side][None])
+    bp[:, ej - 1] = rot.mat_to_rotvec(np.einsum("fij,fjk->fik", Rel, T))
+    return bp.reshape(-1, 63), {"tau_p95_abs": float(np.percentile(np.abs(tau), 95)), "tau_range": [float(tau.min()), float(tau.max())],
+                                "phi_range": [float(phi.min()), float(phi.max())], "phi_rate_limited_frames": int((np.abs(phi - target) > 1e-6).sum()),
+                                "tau_jump_max": float(np.abs(np.diff(tau)).max())}
+
+
 def build(take, variant):
     cfg = TAKES[take]
     h = load(f"{cfg['ref']}/hamer/{cfg['hamer']}")
@@ -152,14 +217,25 @@ def build(take, variant):
         if base != "H0":                                                 # 俯仰补偿：合并后的世界朝向 = R_wc·(相机系手朝向)
             C = RZ180 @ M @ R_wc @ M if side == "L" else RZ180 @ R_wc
             o[valid] = np.einsum("ij,fjk->fik", C, o[valid])
-        if base in ("H2", "H3"):
+        if base in ("H2", "H3", "H4"):
             Hw = world_from_raw(np.where(valid[:, None, None], h["global_orient"][:, hi], np.eye(3))[:n], side, R_wc)
             Fw = G[:n, 20 if side == "L" else 21]
             sg = gate_signals(Hw, Fw, valid[:n], yk[:n, 9 if side == "L" else 10, 2])
             bad = sg["disagree"] | sg["occluded"]
-            if base == "H3":
+            if base in ("H3", "H4"):
                 bad |= sg["speed"]
-            bad = close_dilate(bad)
+            if base == "H4":                                         # "暴力一点"：手腕相对小臂的扭转一帧变化 >30° = 翻转帧
+                Wl = np.einsum("fji,fjk->fik", G[:n, 18 if side == "L" else 19], Hw)
+                tu, implausible = unwrap_deg(twist_deg(Wl, AXIS[side]))
+                tj = np.abs(np.diff(tu))
+                thr = max(40.0, float(np.percentile(tj[valid[1:n] & valid[:n - 1]], 98)))   # 本视频自适应：快舞手转得快
+                jump = (np.r_[False, tj > thr] | np.r_[tj > thr, False]) | implausible
+                bad |= valid[:n] & jump
+                meta.setdefault("twist_jump_thr", {})[side] = round(thr, 1)
+                meta.setdefault("twist_jump_frames", {})[side] = int(jump.sum())
+                bad = close_dilate(bad, gap=6, dil=2)
+            else:
+                bad = close_dilate(bad)
             keep = valid[:n] & ~bad
             o_new, hp_new, filled = fill_gaps(o[:n], hp[:n], keep, side, R_wc, G[:n, 18 if side == "L" else 19])
             o[:n], hp[:n] = o_new, hp_new
@@ -179,7 +255,20 @@ def build(take, variant):
     with open(hp_path, "wb") as fh:
         pickle.dump(out, fh, protocol=4)
     merged = os.path.join(d, "hamer", "merged.pkl")
-    log = run_merge(os.path.join(d, "gvhmr", "hmr4d_results.pt_person-0.pkl"), hp_path, merged, fps=30.0,
+    merge_body = os.path.join(d, "gvhmr", "hmr4d_results.pt_person-0.pkl")
+    if base == "H4":                                                    # 自己做跨帧连续的小臂扭转分配，合并时不开 --forearm_twist
+        pp = load(person_p)
+        bp = np.asarray(pp["smpl_params_global"]["body_pose"], np.float64)
+        for side, hi in SIDES.items():
+            o_side = np.asarray(out["global_orient"], np.float64)[:F, hi]
+            bp, st = distribute_twist(o_side, side, G, bp)
+            meta.setdefault("twist", {})[side] = st
+        for br in ("smpl_params_global", "smpl_params_incam"):
+            pp[br]["body_pose"] = bp.astype(np.float32)
+        merge_body = os.path.join(d, "hamer", "_merge_body_twisted.pkl")
+        with open(merge_body, "wb") as fh:
+            pickle.dump(pp, fh, protocol=4)
+    log = run_merge(merge_body, hp_path, merged, fps=30.0,
                     script_dir=STAGE1_HAMER if "hand_keypoint_conf" in h else HANDOFF_HAMER, python=HAMERLIKE_PY,
                     extra=("--forearm_twist",) if variant.endswith("f") else ())
     m = load(merged)
