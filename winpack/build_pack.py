@@ -188,6 +188,9 @@ def step_install(a):
 
 
 def _copy_tree(src, dst, dry, ignore=("__pycache__", "*.pyc")):
+    if os.path.abspath(src) == os.path.abspath(dst):          # 在整合包里面跑本脚本时源 = 目标：先删后拷会把代码删光
+        say(f"  {dst} 就是源目录，跳过")
+        return
     say(f"  复制 {src} → {dst}")
     if not dry:
         shutil.rmtree(dst, ignore_errors=True)
@@ -198,10 +201,15 @@ def step_app(a):
     app = os.path.join(a.out, "app")
     # 1) FastSAM3DBody 快照：--fsb-src 目录，或仓库里云端打包回来的源码 tgz
     dst = os.path.join(app, "Fast-SAM-3D-Body")
+    tgz = os.path.join(REPO, "data", "cloud_meta", "fastsam3dbody_src.tgz")
     if a.fsb_src:
         src_root = a.fsb_src
+    elif not os.path.isfile(tgz) and os.path.isfile(os.path.join(dst, "sam_3d_body", "__init__.py")):
+        say(f"  没有源码包 {tgz}，{dst} 已有 FastSAM3DBody 代码，保留")
+        src_root = None
+    elif not os.path.isfile(tgz):
+        raise RuntimeError(f"找不到 FastSAM3DBody 源码：{tgz}；用 --fsb-src 指定源码目录")
     else:
-        tgz = os.path.join(REPO, "data", "cloud_meta", "fastsam3dbody_src.tgz")
         src_root = os.path.join(a.cache, "fsb_src")
         say(f"  解包 {tgz} → {src_root}")
         if not a.dry_run:
@@ -212,9 +220,9 @@ def step_app(a):
             subs = [d for d in os.listdir(src_root) if os.path.isdir(os.path.join(src_root, d))]
             if "sam_3d_body" not in subs and len(subs) == 1:
                 src_root = os.path.join(src_root, subs[0])
-    for sub in ("sam_3d_body", "tools"):
+    for sub in ("sam_3d_body", "tools") if src_root else ():
         _copy_tree(os.path.join(src_root, sub), os.path.join(dst, sub), a.dry_run)
-    if not a.dry_run:
+    if not a.dry_run and src_root:
         for f in ("LICENSE", "README.md"):
             if os.path.isfile(os.path.join(src_root, f)):
                 shutil.copy2(os.path.join(src_root, f), dst)
@@ -224,8 +232,11 @@ def step_app(a):
     _copy_tree(HERE, os.path.join(app, "winpack"), a.dry_run, ignore=("__pycache__", "*.pyc", "_cache", "wheelhouse"))
     # 3) MoGe 源码（只要 moge/ 包；不经 pip，理由见 requirements_win.in）
     moge_dst = os.path.join(app, "third_party", "MoGe")
+    stamp = os.path.join(moge_dst, "MOGE_COMMIT.txt")
     if a.moge_src:
         _copy_tree(os.path.join(a.moge_src, "moge"), os.path.join(moge_dst, "moge"), a.dry_run)
+    elif os.path.isfile(stamp) and open(stamp, encoding="utf-8").read().strip() == MOGE_COMMIT:
+        say(f"  MoGe {MOGE_COMMIT[:12]} 已在 {moge_dst}，保留")
     else:
         zp = os.path.join(a.cache, f"MoGe_{MOGE_COMMIT[:12]}.zip")
         fetch((a.github_proxy or "") + f"https://github.com/microsoft/MoGe/archive/{MOGE_COMMIT}.zip", zp, a.dry_run)
