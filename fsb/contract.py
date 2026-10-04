@@ -263,8 +263,11 @@ def validate_take(take_dir: str) -> dict:
                 diff = np.abs(merged[br]["body_pose"].reshape(F, 21, 3) - person[br]["body_pose"].reshape(F, 21, 3)).max(axis=(0, 2))
                 changed = [int(j) for j in np.nonzero(diff > 0)[0]]
                 rep.facts.setdefault("merged_body_pose_changed_joints", {})[br] = changed
-                if set(changed) - {19, 20}:
+                if set(changed) - {17, 18, 19, 20}:
                     rep.err(f"merged.{br}.body_pose 改动了手腕以外的关节 {changed}")
+                elif set(changed) & {17, 18}:
+                    rep.warn(f"merged.{br}.body_pose 改动了肘部 {sorted(set(changed) & {17, 18})}："
+                             "合并时开了「前臂扭转」（--forearm_twist，把部分手腕扭转转给肘，肘+腕合成旋转不变）")
         same = {k: bool(np.array_equal(merged[BRANCHES[0]][k], merged[BRANCHES[1]][k]))
                 for k in merged[BRANCHES[0]] if k in merged[BRANCHES[1]]}
         rep.facts["merged_global_eq_incam"] = all(same.values())
