@@ -20,12 +20,17 @@ from merge_tools import load  # noqa: E402
 from signals import TAKES  # noqa: E402
 
 FRAMES = {   # pkl 帧号：标注坏段里挑代表帧 + 几个正常帧
-    "t999": {100: "左手 87–126（你确认的坏段）", 115: "左手 87–126", 540: "A 右手 532–556", 691: "B1 右手 688–696",
-             737: "左小臂甩动处（H2f）", 746: "左小臂甩动处（H2f）", 750: "左小臂甩动处（H2f）", 771: "E 左手 ~771（不修）",
-             788: "D1 双手 786–791", 806: "D2 左手 800–817", 300: "正常", 900: "正常"},
+    "t999": {100: "左手 87–126（你确认的坏段）", 110: "左手 107–115：旧链路拿了 16 号路人的手", 540: "A 右手 532–556",
+             691: "B1 右手 688–696", 694: "B2 左手 687–701", 737: "C+ 左手（H2f 小臂甩动处）", 750: "C+ 左手",
+             768: "E 765–772：旧链路拿了 30 号路人的双手", 788: "D1 双手 786–791", 806: "D2 左手 800–817", 300: "正常", 900: "正常"},
     "t1499": {520: "遮挡 右手 512–554", 540: "遮挡 右手 512–554", 890: "遮挡 左手 884–898", 200: "正常", 700: "正常", 1200: "正常"},
 }
-VERSIONS = {"old": "{ref}/hamer/merged.pkl", "fsb": "{fsb}/hamer/merged.pkl", "H2f": ROOT + "/out_hybrid/{take}_H4/hamer/merged.pkl"}  # 第 4 列 = H4
+# 模型列：环境变量 SHEET_COLS（逗号分隔），默认 旧 | FSB 自带手 | H4；"old"/"fsb" 之外的名字 = out_hybrid/<take>_<名字>
+COLS = os.environ.get("SHEET_COLS", "old,fsb,H4").split(",")
+FIXED = {"old": "{ref}/hamer/merged.pkl", "fsb": "{fsb}/hamer/merged.pkl"}
+VERSIONS = {c: FIXED.get(c, ROOT + "/out_hybrid/{take}_" + c + "/hamer/merged.pkl") for c in COLS}
+EXTRA_FRAMES = {k: {int(f): "补充" for f in v.split()} for k, v in
+                (x.split(":") for x in os.environ.get("SHEET_EXTRA", "").split(";") if x)}  # 例 "t999:23 25;t1499:10"
 SMPLX = os.path.join(ROOT, "data", "models", "SMPLX_NEUTRAL.npz")
 
 
@@ -43,11 +48,13 @@ def main(out_dir):
     os.makedirs(out_dir, exist_ok=True)
     model = lbs.SMPLXLBS(SMPLX)
     for take, cfg in TAKES.items():
-        frames = sorted(FRAMES[take])
+        labels = dict(FRAMES[take])
+        labels.update({f: l for f, l in EXTRA_FRAMES.get(take, {}).items() if f not in labels})
+        frames = sorted(labels)
         mt = np.load(f"{cfg['raw']}/main_track.npz")
         kp2 = np.concatenate([np.load(f)["pred_keypoints_2d"] for f in sorted(
             __import__("glob").glob(f"{cfg['raw']}/sam3d_part_*.npz"))])
-        data = {"faces": model.f.astype(np.int32), "frames": np.array(frames)}
+        data = {"faces": model.f.astype(np.int32), "frames": np.array(frames), "cols": np.array(COLS)}
         for name, tpl in VERSIONS.items():
             g = load(tpl.format(ref=cfg["ref"], fsb=cfg["fsb"], take=take))["smpl_params_global"]
             G = rot.chain_global_rotations(np.asarray(g["global_orient"], float), np.asarray(g["body_pose"], float),
@@ -76,7 +83,7 @@ def main(out_dir):
             i += 1
         np.savez_compressed(f"{out_dir}/{take}_meshes.npz", **data)
         with open(f"{out_dir}/{take}_labels.json", "w", encoding="utf-8") as fh:
-            json.dump({str(f): FRAMES[take][f] for f in frames}, fh, ensure_ascii=False)
+            json.dump({str(f): labels[f] for f in frames}, fh, ensure_ascii=False)
         print(take, "frames", frames)
 
 

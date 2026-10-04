@@ -17,10 +17,17 @@ from signals import TAKES, mask  # noqa: E402
 
 OUT = os.path.join(ROOT, "out_hybrid")
 REP = os.path.join(ROOT, "reports", "hybrid")
-SEG_NAMES = {"t999": {"R": ["A 532–556", "B1 688–696", "D1 786–791"], "L": ["B2 687–701", "C+ 733–779（含 E~771）", "D1 786–791", "D2 800–817"]},
+SEG_NAMES = {"t999": {"R": ["A 532–556", "B1 688–696", "D1 786–791"], "L": ["用户确认 87–127", "B2 687–701", "C+ 733–779（含 E~771）", "D1 786–791", "D2 800–817"]},
              "t1499": {"R": ["遮挡 512–554"], "L": ["遮挡 884–898"]}}
 WRIST = {"L": slice(57, 60), "R": slice(60, 63)}
 HAND = {"L": "left_hand_pose", "R": "right_hand_pose"}
+TWISTED = ("H4", "B4", "B5", "B6", "B7")                                         # 合并前改了肘部（小臂扭转）的变体
+
+
+def variants(take):
+    """阶段 A 的全部变体 + 已构建的阶段 B 变体（B4 / B5）。"""
+    vs = ["H0", "H1", "H2", "H3", "H1f", "H2f", "H4"]
+    return vs + [v for v in ("B4", "B5", "B6", "B7") if os.path.isfile(f"{OUT}/{take}_{v}/hamer/merged.pkl")]
 
 
 def series(pkl):
@@ -46,7 +53,8 @@ def main():
           "坏段 = 用户标注（999：A–E 问题全集；1499：两处遮挡），pkl 帧号。", ""]
     for take, cfg in TAKES.items():
         vers = {"旧(GVHMR+HaMeR)": f"{cfg['ref']}/hamer/merged.pkl", "FSB自带手": f"{cfg['fsb']}/hamer/merged.pkl"}
-        for v in ("H0", "H1", "H2", "H3", "H1f", "H2f", "H4"):
+        VS = variants(take)
+        for v in VS:
             vers[f"混合{v}"] = f"{OUT}/{take}_{v}/hamer/merged.pkl"
         S = {k: series(p) for k, p in vers.items()}
         F = min(len(S[k]["body"]) for k in S)
@@ -54,14 +62,14 @@ def main():
         md += [f"## {take}", ""]
         # 身体（除手腕）应与 FSB 自带手版本逐位相同
         fsb_body = S["FSB自带手"]["body"][:F].reshape(F, 21, 3)
-        for v in ("H0", "H1", "H2", "H3", "H1f", "H2f", "H4"):
+        for v in VS:
             hb = S[f"混合{v}"]["body"][:F].reshape(F, 21, 3)
-            others = [j for j in range(21) if j not in ((17, 18, 19, 20) if (v.endswith("f") or v == "H4") else (19, 20))]
+            others = [j for j in range(21) if j not in ((17, 18, 19, 20) if (v.endswith("f") or v in TWISTED) else (19, 20))]
             d = float(np.abs(hb[:, others] - fsb_body[:, others]).max())
             summary[take][f"body_nonwrist_maxdiff_{v}"] = d
         md.append(f"- 混合版除手腕外的身体与 FSB 版逐位相同：最大差 "
-                  + "，".join(f"{v} {summary[take][f'body_nonwrist_maxdiff_{v}']:.1e}" for v in ("H0", "H1", "H2", "H3", "H1f", "H2f", "H4"))
-                + "（f 版和 H4 不比肘部：小臂扭转本来就改肘）")
+                  + "，".join(f"{v} {summary[take][f'body_nonwrist_maxdiff_{v}']:.1e}" for v in VS)
+                + "（f 版和 H4/B 不比肘部：小臂扭转本来就改肘）")
         old = S["旧(GVHMR+HaMeR)"]
         h0 = S["混合H0"]
         for s in ("L", "R"):
@@ -86,12 +94,12 @@ def main():
                 summary[take].setdefault(s, {})[k] = row
                 md.append(f"| {k} | {row['wsp_p50']:.1f} / {row['wsp_p95']:.1f} | {row['over_T_in']} / {row['over_T_out']} | "
                           f"{row['max_in']:.1f} | {row['bend_p95']:.0f}° | {row['fsp_p95']:.1f} | {row['vs_old_mean']:.1f} / {row['vs_old_p95']:.1f} | {row['elbow_spikes']} |")
-            md += ["", f"逐段（手腕最大角速度 °/帧，旧 → H0 / H1 / H2 / H3 / H1f / H2f / H4）：", ""]
+            md += ["", f"逐段（手腕最大角速度 °/帧，旧 → {' / '.join(VS)}）：", ""]
             for (a, b), nm in zip(cfg["bad"][s], SEG_NAMES[take][s]):
-                vals = [S[k][s]["wsp"][a:b + 1].max() for k in ("旧(GVHMR+HaMeR)", "混合H0", "混合H1", "混合H2", "混合H3", "混合H1f", "混合H2f", "混合H4")]
+                vals = [S[k][s]["wsp"][a:b + 1].max() for k in ["旧(GVHMR+HaMeR)"] + [f"混合{v}" for v in VS]]
                 md.append(f"- {nm}：{vals[0]:.1f} → " + " / ".join(f"{x:.1f}" for x in vals[1:]))
             md.append("")
-        for v in ("H2", "H3", "H4"):
+        for v in [v for v in VS if v in ("H2", "H3", "H4", "B4", "B5", "B6", "B7")]:
             meta = json.load(open(f"{OUT}/{take}_{v}/hybrid_meta.json", encoding="utf-8"))
             md.append(f"- {v} 门控补帧：左 {meta['filled']['L']['pct']}%、右 {meta['filled']['R']['pct']}%；区间（左）"
                       f"{meta['gated']['L'][:12]}{' …' if len(meta['gated']['L']) > 12 else ''}")

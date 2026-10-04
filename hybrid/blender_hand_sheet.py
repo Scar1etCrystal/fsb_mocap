@@ -24,7 +24,10 @@ sc.render.image_settings.file_format = "PNG"
 cam_data = bpy.data.cameras.new("cam"); cam = bpy.data.objects.new("cam", cam_data); sc.collection.objects.link(cam); sc.camera = cam
 cam_data.type = "ORTHO"
 ROT = Matrix.Rotation(np.pi / 2, 4, "X") @ Matrix.Rotation(np.pi, 4, "Y")   # 看 −Y，画面右 = −X（与视频同向）
-COLORS = {"old": (0.55, 0.62, 0.75), "fsb": (0.95, 0.6, 0.25), "H2f": (0.45, 0.78, 0.45)}
+COLS = [str(c) for c in data["cols"]] if "cols" in data.files else ["old", "fsb", "H2f"]
+PALETTE = [(0.55, 0.62, 0.75), (0.95, 0.6, 0.25), (0.45, 0.78, 0.45), (0.85, 0.45, 0.75)]   # 灰蓝 / 橙 / 绿 / 紫
+_free = iter([PALETTE[2], PALETTE[3], (0.9, 0.8, 0.3)])                 # 旧 / FSB 固定色，其余列依次取绿、紫、黄
+COLORS = {c: {"old": PALETTE[0], "fsb": PALETTE[1]}.get(c) or next(_free) for c in COLS}
 TMP = out_prefix + "_tmp.png"
 
 
@@ -79,7 +82,7 @@ def video_panel(f):
 rows = []
 for f in data["frames"]:
     f = int(f)
-    row = [video_panel(f)] + [model_panel(n, f) for n in ("old", "fsb", "H2f")]
+    row = [video_panel(f)] + [model_panel(n, f) for n in COLS]
     rows.append(np.concatenate(row, axis=1))
     print("row", f, labels[str(f)], flush=True)
 if os.path.exists(TMP):
