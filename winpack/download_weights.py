@@ -143,9 +143,17 @@ def fetch(pack, item, hf_endpoint, gh_proxy, token):
         hf_hub_download(src["repo"], src["file"], revision=src.get("revision"), local_dir=local_dir, token=token,
                         endpoint=hf_endpoint)
     elif src["type"] == "hf_cache":
-        from huggingface_hub import hf_hub_download            # 缓存布局必须用 huggingface_hub 写（refs/main + snapshots）
-        hf_hub_download(src["repo"], src["file"], revision="main", cache_dir=os.path.dirname(dest), token=token,
-                        endpoint=hf_endpoint)
+        try:
+            from huggingface_hub import hf_hub_download
+            hf_hub_download(src["repo"], src["file"], revision="main", cache_dir=os.path.dirname(dest), token=token,
+                            endpoint=hf_endpoint)
+        except ImportError:                                     # 宿主 Python 没装 huggingface_hub：手工写最小缓存布局
+            rev = src["revision"]                               # 离线加载只看 refs/main → snapshots/<sha>/<file>
+            download_url(source_url(item, hf_endpoint, gh_proxy), os.path.join(dest, "snapshots", rev, *src["file"].split("/")),
+                         item.get("size"), token)
+            os.makedirs(os.path.join(dest, "refs"), exist_ok=True)
+            with open(os.path.join(dest, "refs", "main"), "w", encoding="utf-8") as fh:
+                fh.write(rev)
     elif src["type"] == "url":
         download_url(source_url(item, hf_endpoint, gh_proxy), dest, item.get("size"))
     elif src["type"] == "github_zip":
