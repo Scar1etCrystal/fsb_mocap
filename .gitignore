@@ -4,3 +4,6 @@ __pycache__/
 /reports/
 /data/
 /out_hybrid/
+
+# 本机私有：云端登录地址（cloud/ssh.sh 读它）
+cloud/ssh_target.env

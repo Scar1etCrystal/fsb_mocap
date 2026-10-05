@@ -18,3 +18,15 @@
 文档：docs/格式_交付合同.md、格式_SMPLX序列.md、格式_云端原始输出_MHR.md、方案_骨骼重定向.md、方案_Windows整合包.md、云端运行手册.md。
 
 测试：`for f in tests/test_*.py; do python3 $f; done`（不需要 GPU）；Blender 端：`bash /home/sb/remote_kit_1.7.1/tools/mcd.sh run tests_blender/addon_fsb_e2e.py <blend> -- <补丁后插件> <FSB 包> <PKL 目录> <视频> <本仓库>`。
+
+## 公开仓库里没有的文件（本地生成）
+
+公开仓库 `Scar1etCrystal/fsb_mocap` 是本地仓库的净化镜像（`tools/publish_public.sh` 生成），少两样东西：
+
+| 文件 | 为什么不公开 | 怎么得到 |
+|---|---|---|
+| `fsb/assets/mhr_rest.npz` | 从 SAM 3D Body 的 `mhr_model.pt` 导出（MHR 静止姿态关节），受 SAM License 约束；那份权重是 gated，公开派生数据等于绕过申请 | 自己申请并下载权重后：`python cloud/export_mhr_rest.py fsb/assets/mhr_rest.npz`（脚本里 `mhr_model.pt` 的路径按你的机器改） |
+| `addon/gvhmr_pose_capture_fsb.py` | 是 PoseCapture 插件打过补丁的完整源码（插件本身不在本仓库发布） | `python addon/apply_fsb_patch.py <你的 gvhmr_pose_capture.py> -o addon/gvhmr_pose_capture_fsb.py` |
+
+云端登录地址不进仓库：`cloud/ssh.sh` 从 `cloud/ssh_target.env`（gitignore）或环境变量 `AUTODL_HOST` / `AUTODL_PORT` 读。
+
