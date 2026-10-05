@@ -19,7 +19,7 @@ trap 'rm -rf "$TMP"' EXIT
 git clone -q --no-local --branch "$BRANCH" "$SRC" "$TMP/repo"
 cd "$TMP/repo"
 git remote remove origin
-FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -q --prune-empty --tree-filter '
+FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --prune-empty --tree-filter '
     rm -f fsb/assets/mhr_rest.npz addon/gvhmr_pose_capture_fsb.py
     if [ -f cloud/ssh.sh ]; then
         sed -i -E "s/connect\.[A-Za-z0-9-]+\.seetacloud\.com/<AUTODL_HOST>/g; s/-p [0-9]{4,5} root@/-p <AUTODL_PORT> root@/g" cloud/ssh.sh
