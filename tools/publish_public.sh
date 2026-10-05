@@ -24,12 +24,16 @@ FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --prune-empty --tree-filter '
     if [ -f cloud/ssh.sh ]; then
         sed -i -E "s/connect\.[A-Za-z0-9-]+\.seetacloud\.com/<AUTODL_HOST>/g; s/-p [0-9]{4,5} root@/-p <AUTODL_PORT> root@/g" cloud/ssh.sh
     fi' -- "$BRANCH" > /dev/null
-# 自检：镜像的任何提交里都不能再有这两样文件和真实登录地址
-if git log --all --name-only --format= | grep -qE '^(fsb/assets/mhr_rest\.npz|addon/gvhmr_pose_capture_fsb\.py)$'; then
-    echo "镜像里还有不该公开的文件" >&2; exit 1
+git update-ref -d "refs/original/refs/heads/$BRANCH"          # 原始提交不进镜像
+# 自检：镜像分支的任何提交里都不能再有这两样文件和真实登录地址。
+# 先收集再判断：pipefail 下 `… | grep -q` 会因上游收到 SIGPIPE 而整条"失败"，把命中误判成没命中。
+bad_files=$(git log "$BRANCH" --name-only --format= | grep -E '^(fsb/assets/mhr_rest\.npz|addon/gvhmr_pose_capture_fsb\.py)$' || true)
+if [ -n "$bad_files" ]; then
+    echo "镜像里还有不该公开的文件：$bad_files" >&2; exit 1
 fi
-if git grep -nE 'connect\.[A-Za-z0-9-]+\.seetacloud\.com|-p [0-9]{4,5} root@' $(git rev-list "$BRANCH") -- cloud/ssh.sh | grep -v '<AUTODL_' | grep -q .; then
-    echo "镜像里还有云端登录地址" >&2; exit 1
+bad_host=$(git grep -nE 'connect\.[A-Za-z0-9-]+\.seetacloud\.com|-p [0-9]{4,5} root@' $(git rev-list "$BRANCH") -- cloud/ssh.sh || true)
+if [ -n "$bad_host" ]; then
+    echo "镜像里还有云端登录地址：" >&2; echo "$bad_host" | head -3 >&2; exit 1
 fi
 echo "镜像 $(git rev-list --count "$BRANCH") 个提交，HEAD $(git rev-parse --short "$BRANCH")（本地 $(git -C "$SRC" rev-parse --short HEAD)）"
 if [ "${1:-}" = "--dry-run" ]; then
